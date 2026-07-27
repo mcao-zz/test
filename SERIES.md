@@ -1,0 +1,24 @@
+# Series under test
+
+Update this when the kernel tip or patch count changes.
+
+| Field | Value |
+|-------|-------|
+| Driver series | ibmveth MQ RX v4 |
+| Kernel branch | `veth-mq-upstream-netnext-v4-review` |
+| Patch count | 14 (base `805185b7c7a1`) |
+| Tip subject | ibmveth: Fix MQ RX poll and shutdown hangs after queue resize |
+| Kernel tree tip | `a8dfd6177669bc899fee096eacfc50beb36da310` |
+| Kernel remote | `git@github.com:mcao-zz/linux.git` |
+| PHYP notes | Open enable↔post either OK (drops if early enable). Close free-lan vs free_irq either OK once masked. |
+| v4 open | MQ: replenish then unmask. SQ: classic kick (poll posts then enable). |
+| v4 close | mask + napi_disable + free_irq, then free_lan (v3 tip order) |
+
+## History of plan revisions
+
+| Date | Note |
+|------|------|
+| 2026-07-23 | Initial plan + scripts; dropped classic-close tip patch from series |
+| 2026-07-23 | Restacked hollow P9-P14 so subjects match diffs; tip tree unchanged |
+| 2026-07-27 | Tip `a8dfd6177669`: qstats define move; IRQ ownership (leave queue_irq[0], open dispose unwind); P13 message why down-state RX is stashed |
+| 2026-07-27 | TEST-PLAN on veth-mq-tests: added T14–T20 for v4 (geometry, stash, hcall deltas, set_channels, reload) |

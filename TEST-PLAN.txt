@@ -1,0 +1,236 @@
+ibmveth MQ RX v4 — LPAR validation plan
+========================================
+Series: veth-mq-upstream-netnext-v4-review (14 patches, base 805185b7c7a1)
+Tip (update when tip moves): a8dfd6177669
+Focus: open order, close under traffic, ethtool -L, poll hangs, SQ regression,
+       plus v4-specific review fixes (IRQ ownership, down-state stash, stats,
+       P14 correlator/shutdown)
+
+Repo: git@github.com:mcao-zz/test.git  branch veth-mq-tests
+Lab scripts: verify-mq-adapter.sh, test-veth-mq.sh, rx_queue_size.sh
+Plan helpers (also on branch main): lpar-tests/*.sh
+
+PHYP contract (confirmed — do not treat as must-fix regressions)
+-----------------------------------------------------------------
+* Open: enable-before-post OR post-before-enable both OK for interrupts.
+  No IRQ without successful enqueue (needs buffers). Early enable ⇒ drops
+  until buffers posted.
+* Close: H_FREE_LOGICAL_LAN[_QUEUE] does not require Linux handlers still
+  registered; after H_Success source is disabled. Mask-first is Linux
+  storm safety, not a PHYP rule.
+
+What v4 intentionally keeps
+---------------------------
+* MQ open: replenish all queues, then setup_rx_interrupts() unmasks
+* SQ open: classic kick — setup (no unmask) → schedule → poll posts → enable
+* Close: mask + napi_disable + free_irq, then free_lan
+
+v4 deltas to validate (beyond v3 plan)
+--------------------------------------
+* P13 down-state: ethtool -L while !IFF_UP only stashes adapter->num_rx_queues
+  (no allocate until open)
+* IRQ ownership: cleanup leaves queue_irq[0] (= netdev->irq); subordinates
+  disposed once (no double-dispose storm / wrong virq reuse)
+* Stats: ethtool -S uses hcall_* names; per-queue rxN_*/txN_* after P10
+* P14: aggressive -L must not hang poll on bad correlator; close completes
+* set_channels TX+RX while up/down (P12/P13 wiring)
+
+Prerequisites
+-------------
+* ppc64le PowerVM LPAR, MQ-capable PHYP (ILLAN MQ bit)
+* Peer on same L2 (example: DUT env9=192.168.100.3, peer=192.168.100.2)
+* Root on DUT; IFACE=env9 PEER=192.168.100.2
+* Optional: LPAR without MQ bit for T13
+* For real RX: iperf3 servers on DUT, clients on peer (see README)
+
+Quick map: risk → test
+----------------------
+| Risk / change                              | Test ID      |
+|--------------------------------------------|--------------|
+| SQ open/close regression                   | T1, T2, T6   |
+| MQ open replenish-before-unmask            | T3, T4       |
+| Close under traffic (MQ / SQ)              | T5, T6       |
+| ethtool -L resize up/down                  | T7, T8, T14  |
+| -L under iperf (P12/P13)                   | T9, T15      |
+| Poll hang / bad correlator (P14)           | T10          |
+| NAPI/close during -L / ifdown              | T11          |
+| Stats / debugfs / hcall_* (P10/P11)        | T12, T16     |
+| Legacy firmware (no MQ bit)                | T13          |
+| Down-state RX stash (P13)                  | T8, T17      |
+| IRQ geometry after resize/close/open       | T14, T18     |
+| set_channels TX with RX                    | T19          |
+| Module reload restores MQ                  | T20          |
+
+Pass criteria (global)
+----------------------
+* No soft lockup / RCU stall / hung task
+* No endless "bad correlator" spam (rate-limited msgs OK under T10)
+* ifup always restores ping within a few seconds
+* dmesg: no new Oops/BUG/Call Trace; WARN only if previously known
+* After each major test: ping -c 3 $PEER OK
+* After each -L: ethtool -l RX, ethtool -S rxN_packets rows, and
+  /proc/interrupts lines for $IFACE all equal the target count
+
+--------------------------------------------------------------------
+Test details
+--------------------------------------------------------------------
+
+T1 — SQ bring-up / tear-down churn
+  ethtool -L $IFACE rx 1
+  for i in $(seq 1 50); do ip link set $IFACE down; ip link set $IFACE up; done
+  ping -c 5 $PEER
+  Pass: no hang; link up; ping OK
+
+T2 — SQ traffic + ifdown/up
+  iperf3 bidirectional; every 10s ifdown/up for ~2 min
+  Pass: no hang; recovers; ping OK
+
+T3 — MQ open (replenish-before-unmask)
+  ethtool -L $IFACE rx 8; ifdown; ifup
+  Immediately: ping -f -c 200 $PEER  (or short iperf)
+  Pass: connectivity; no IRQ storm; optional low open loss
+
+T4 — MQ open under background RX flood
+  Peer floods toward DUT; DUT ifdown/ifup ×20
+  Pass: no hang; final up OK
+
+T5 — MQ close under RX+TX load
+  rx 8; bidirectional iperf; ifdown/up every 5–10s for 2–3 min
+  Pass: no softlockup; clean reopen
+
+T6 — SQ close under load
+  Same as T5 with rx 1
+
+T7 — ethtool -L cycling (iface up)
+  Pattern: 16/1/8/11/1/3/16/8/1 (clamp to max)
+  Or: sudo ./rx_queue_size.sh $IFACE 2
+  Pass: each -L OK; geometry checks pass; ping between steps if PEER set
+
+T8 — ethtool -L while down (stash path)
+  ifdown
+  ethtool -l  → note current
+  ethtool -L $IFACE rx 4
+  # Must NOT allocate subordinates while down: no new "Registered queue"
+  # burst in dmesg beyond stash (watch dmesg -w briefly)
+  ifup
+  ethtool -l shows RX: 4; ping OK
+  Pass: desired rx applied on open only (P13)
+
+T9 — -L under iperf
+  iperf clients on peer → DUT; aggressive -L 2–3 min
+  Pass: no crash; scale survives; iperf may blip
+
+T10 — correlator / poll hang (P14)
+  Long aggressive -L (10+ min) + ifdown/up mix
+  Pass: may rate-limit bad correlator; must NOT hang forever
+
+T11 — parallel -L and ifdown/up
+  Pass: eventually quiescent; no close deadlock
+
+T12 — stats / debugfs smoke
+  ethtool -S $IFACE | grep -E 'hcall_|rx[0-9]+_packets|tx[0-9]+_packets'
+  Expect v4 names: hcall_reg_lan_queue, hcall_reg_lan, hcall_add_bufs_queue, …
+  After MQ traffic: several rxN_packets increase (not only rx0)
+  find /sys/kernel/debug -name buffer_pools 2>/dev/null | head
+  Pass: readable; no oops
+
+T13 — legacy / non-MQ firmware
+  T1 T2 T6; ethtool -L rx 2 → -EOPNOTSUPP
+  Pass: SQ only; reject cleanly
+
+--------------------------------------------------------------------
+v4-focused additions
+--------------------------------------------------------------------
+
+T14 — Resize geometry triple-check (automated by rx_queue_size.sh)
+  After each -L N:
+    ethtool -l RX == N
+    count(rxN_packets in -S) == N
+    count(/proc/interrupts matching $IFACE) == N
+    sysfs queues/rx-* == N (if present)
+    dmesg delta contains "Successfully resized to N RX queues"
+    no Oops/BUG; error counters not exploding
+  Pass: ./rx_queue_size.sh succeeds end-to-end
+  Script: sudo PEER=$PEER ./rx_queue_size.sh $IFACE 2
+
+T15 — Resize under multi-flow RX (cover-letter style)
+  On DUT: iperf3 -s -p 5201..5216 -D
+  On peer: iperf3 -c $DUT_IP -t 300 -P 4 -p 5201..5216 &
+  On DUT: sudo PEER=$PEER ./rx_queue_size.sh $IFACE 1
+  Watch: ethtool -S rx*_packets / rx*_interrupts move across queues
+  Pass: T14 checks under load; no hang; ping OK after
+
+T16 — hcall counters track resize
+  Snapshot ethtool -S before/after scale-up 4→8 and scale-down 8→4
+  Expect: hcall_reg_lan_queue increases on scale-up (≈ +4)
+          hcall_free_lan_queue increases on scale-down
+          hcall_add_bufs_queue increases when replenishing new queues
+  Pass: deltas non-zero in the right direction (absolute values vary)
+
+T17 — Down-state stash does not touch live IRQs
+  ifup with rx 8; note IRQ lines
+  ifdown; ethtool -L rx 2; confirm IRQ count still reflects down/closed
+    state (no live subordinate IRQs while down)
+  ifup; ethtool -l RX: 2; IRQ lines == 2
+  Pass: no allocate-while-down; open publishes stashed count
+
+T18 — Close/open preserves queue0 IRQ identity
+  Before close: read /proc/interrupts for $IFACE (queue0 line)
+  ifdown; ifup (rx>=1)
+  Pass: interface has working IRQ; ping OK
+  Note: hard to assert exact virq number; fail if open fails request_irq
+        or "queue 0 has invalid IRQ (0)" in dmesg (v4 leave queue_irq[0])
+
+T19 — set_channels TX and RX together
+  ethtool -l $IFACE
+  ethtool -L $IFACE rx 4 tx 2   # or separate if driver requires
+  (ibmveth set_channels handles both; use ethtool -L rx/tx as supported)
+  ethtool -l shows expected rx/tx; ping + short iperf OK
+  ifdown; ethtool -L rx 8; ifup; ethtool -l RX: 8
+  Pass: combined path and down-stash still work
+
+T20 — Module reload restores MQ
+  ethtool -L rx 8; verify MQ
+  modprobe -r ibmveth; modprobe ibmveth dyndbg=+p
+  (or verify-mq-adapter -D)
+  Bring $IFACE up; ethtool -l RX >= 1; ping OK
+  Pass: open complete; hcall_reg_lan_queue > 0 if rx>1; no stuck NAPI
+
+--------------------------------------------------------------------
+Suggested order
+--------------------------------------------------------------------
+1. Smoke: T1, T3, T12 (stat names), ping
+2. Automated resize: T14 (rx_queue_size.sh)
+3. Core: T5, T7, T9 / T15
+4. v4 stash / IRQ: T8, T17, T18, T16
+5. Hard: T10, T11
+6. SQ regression: T2, T6
+7. Optional: T4, T13, T19, T20
+
+What test-veth-mq.sh already covers
+----------------------------------
+Smoke subset of T3/T7/T9/T20-ish (scale, under-load ping, single queue,
+module reload, hcall_reg_lan_queue). It does NOT replace T10/T11 long
+stress, T8/T17 stash checks, or T15 multi-iperf RX distribution.
+
+--------------------------------------------------------------------
+Artifacts on failure
+--------------------------------------------------------------------
+* dmesg -T | tee dmesg-FAIL.txt
+* ethtool -l / -S / -i $IFACE
+* grep $IFACE /proc/interrupts
+* /tmp/ibmveth-rx-cycle-* / /tmp/ibmveth-mq-test-results/
+* uname -r; git -C linux rev-parse HEAD; git -C scripts rev-parse HEAD
+
+--------------------------------------------------------------------
+Commands cheat sheet (example lab)
+--------------------------------------------------------------------
+  export IFACE=env9 PEER=192.168.100.2 DUT_IP=192.168.100.3
+
+  sudo ./verify-mq-adapter.sh -d $IFACE -D -v
+  sudo ./test-veth-mq.sh -d $IFACE -t $PEER
+  sudo PEER=$PEER ./rx_queue_size.sh $IFACE 2
+
+  # T15 traffic
+  for p in $(seq 5201 5216); do iperf3 -s -p $p -D; done   # on DUT
+  # on peer: iperf3 -c $DUT_IP -t 300 -P 4 -p $p &

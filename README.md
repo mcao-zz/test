@@ -189,3 +189,9 @@ counts. Prefer console or an alternate management path.
 | Kernel remote | `git@github.com:mcao-zz/linux.git` |
 | Branch | `veth-mq-upstream-netnext-v4-review` |
 | Tip (as of 2026-07-27) | `a8dfd6177669` |
+
+## Validation plan
+
+See **[TEST-PLAN.txt](TEST-PLAN.txt)** for T1–T20 (including v4-specific
+stash, IRQ geometry, hcall deltas, P14 stress). Map: `test-veth-mq.sh`
+covers a smoke subset; `rx_queue_size.sh` is T14; use iperf for T15.
