@@ -192,6 +192,26 @@ counts. Prefer console or an alternate management path.
 
 ## Validation plan
 
-See **[TEST-PLAN.txt](TEST-PLAN.txt)** for T1–T20 (including v4-specific
-stash, IRQ geometry, hcall deltas, P14 stress). Map: `test-veth-mq.sh`
-covers a smoke subset; `rx_queue_size.sh` is T14; use iperf for T15.
+See **[TEST-PLAN.txt](TEST-PLAN.txt)** for T1–T20.
+
+### Long-term layout (combined)
+
+| Layer | Path | Role |
+|-------|------|------|
+| **Auto harness** | `lpar-tests/` | Small scripts + `env.sh` + `run-all.sh` (add new T* here) |
+| **Lab monoliths** | repo root | `verify-mq-adapter.sh`, `test-veth-mq.sh`, `rx_queue_size.sh` — deep/manual or wrapped |
+
+Prefer **new automated cases in `lpar-tests/`**. Keep root scripts for bring-up and heavy one-shot suites; call them from `lpar-tests/lab-smoke.sh` / `t14-rx-cycle.sh`.
+
+```bash
+export IFACE=env9 PEER=192.168.100.2
+cd lpar-tests
+sudo ./run-all.sh                    # full ordered suite
+sudo ./smoke.sh                      # T1+T3
+sudo ./t8-down-stash.sh              # P13 stash
+sudo ./t16-hcall-deltas.sh           # v4 hcall_* names
+sudo ./t14-rx-cycle.sh               # wraps ../rx_queue_size.sh
+sudo LAB_FULL=1 ./lab-smoke.sh       # verify + test-veth-mq.sh
+```
+
+Skip steps: `SKIP_PARALLEL=1 SKIP_L_IPERF=1 sudo ./run-all.sh`

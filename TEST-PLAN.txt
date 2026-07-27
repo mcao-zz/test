@@ -7,8 +7,8 @@ Focus: open order, close under traffic, ethtool -L, poll hangs, SQ regression,
        P14 correlator/shutdown)
 
 Repo: git@github.com:mcao-zz/test.git  branch veth-mq-tests
-Lab scripts: verify-mq-adapter.sh, test-veth-mq.sh, rx_queue_size.sh
-Plan helpers (also on branch main): lpar-tests/*.sh
+Lab monoliths: verify-mq-adapter.sh, test-veth-mq.sh, rx_queue_size.sh
+Auto harness: lpar-tests/*.sh  (preferred place for new automated tests)
 
 PHYP contract (confirmed — do not treat as must-fix regressions)
 -----------------------------------------------------------------
@@ -222,15 +222,24 @@ Artifacts on failure
 * /tmp/ibmveth-rx-cycle-* / /tmp/ibmveth-mq-test-results/
 * uname -r; git -C linux rev-parse HEAD; git -C scripts rev-parse HEAD
 
---------------------------------------------------------------------
-Commands cheat sheet (example lab)
---------------------------------------------------------------------
-  export IFACE=env9 PEER=192.168.100.2 DUT_IP=192.168.100.3
+Scripts
+-------
+Auto harness (preferred for new tests):
+  lpar-tests/env.sh              — IFACE/PEER, geometry helpers
+  lpar-tests/run-all.sh          — ordered suite
+  lpar-tests/smoke.sh            — T1+T3
+  lpar-tests/t8-down-stash.sh    — T8/T17 P13 stash
+  lpar-tests/t14-rx-cycle.sh     — T14 wraps ../rx_queue_size.sh
+  lpar-tests/t16-hcall-deltas.sh — T16 hcall_* counters
+  lpar-tests/lab-smoke.sh        — wraps verify (+ optional test-veth-mq)
+  lpar-tests/close-under-load.sh
+  lpar-tests/ethtool-L-cycle.sh
+  lpar-tests/parallel-stress.sh
 
-  sudo ./verify-mq-adapter.sh -d $IFACE -D -v
-  sudo ./test-veth-mq.sh -d $IFACE -t $PEER
-  sudo PEER=$PEER ./rx_queue_size.sh $IFACE 2
+Lab monoliths (root — bring-up / deep dive):
+  verify-mq-adapter.sh
+  test-veth-mq.sh
+  rx_queue_size.sh
+  test-legacy-veth.sh
 
-  # T15 traffic
-  for p in $(seq 5201 5216); do iperf3 -s -p $p -D; done   # on DUT
-  # on peer: iperf3 -c $DUT_IP -t 300 -P 4 -p $p &
+Edit: export IFACE=env9 PEER=192.168.100.2 before run-all.
