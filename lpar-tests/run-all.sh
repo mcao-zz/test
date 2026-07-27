@@ -80,7 +80,9 @@ if [[ "${SKIP_HEAVY:-0}" != 1 ]]; then
 	[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
 		run mq-rx-pre "$DIR/t-mq-rx-under-load.sh" pre-heavy
 
-	[[ "${SKIP_T14:-0}" = 1 ]] || run t14-cycle "$DIR/t14-rx-cycle.sh"
+	# T14 under inbound: each -L step checks error Δ, bulk RX, new-queue traffic
+	[[ "${SKIP_T14:-0}" = 1 ]] || \
+		run t14-cycle env UNDER_RX=1 "$DIR/t14-rx-cycle.sh"
 	# T14 ends at RX=1 — restore MQ and re-prove inbound still alive + spread.
 	[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
 		run mq-rx-post-t14 "$DIR/t-mq-rx-under-load.sh" post-t14

@@ -222,7 +222,8 @@ sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
 2. **Iperf + MQ RX proof** — start `iperf3 -s`, wait for `yes`, require bulk
    `rx*_packets` Δ ≥ `MIN_RX_DELTA` and ≥ `MIN_ACTIVE_RX_QUEUES` queues active
    at `MQ_PROOF_RX` (rejects ping-sized noise)
-3. **Heavy** — t14 / close-mq / parallel / -L, with MQ RX re-proof after each
+3. **Heavy** — T14 with `UNDER_RX=1` (per-step error Δ, bulk RX, new-queue
+   traffic on scale-up), close-mq / parallel / -L, MQ RX re-proof after each
 4. **Cleanup** — stop only iperf servers this run started; final ping
 
 ```bash

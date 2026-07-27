@@ -11,12 +11,18 @@
 #   - sysfs queues/rx-* count (if present)
 #   - iface still UP / LOWER_UP
 #   - dmesg delta: resize success; no oops/BUG/Call Trace for ibmveth
-#   - error counters still zero (or not newly increasing if PEER traffic)
+#   - error counter *deltas* (invalid / no_buffer / replenish_fail) ≈ 0
 #   - optional ping to PEER (env PEER=192.168.100.2)
+#
+# Under load (UNDER_RX=1 — keep lp7→DUT iperf running):
+#   - bulk rx*_packets Δ >= MIN_RX_DELTA over RX_SAMPLE_SECS
+#   - scale-down: surviving queues still receive; no error Δ spike
+#   - scale-up: at least one *new* queue (qid >= previous RX) sees packets
 #
 # Usage:
 #   sudo ./rx_queue_size.sh [iface] [delay_seconds]
 #   sudo PEER=192.168.100.2 ./rx_queue_size.sh env9 2
+#   sudo PEER=… UNDER_RX=1 MIN_RX_DELTA=10000 ./rx_queue_size.sh env9 2
 #
 # Logs: /tmp/ibmveth-rx-cycle-<iface>-<timestamp>/
 
@@ -25,6 +31,12 @@ set -u
 IFACE="${1:-env9}"
 DELAY="${2:-2}"
 PEER="${PEER:-}"
+UNDER_RX="${UNDER_RX:-0}"
+RX_SAMPLE_SECS="${RX_SAMPLE_SECS:-5}"
+MIN_RX_DELTA="${MIN_RX_DELTA:-10000}"
+MIN_ACTIVE_RX_QUEUES="${MIN_ACTIVE_RX_QUEUES:-2}"
+MIN_NEW_QUEUE_DELTA="${MIN_NEW_QUEUE_DELTA:-1}"
+MAX_ERR_DELTA="${MAX_ERR_DELTA:-0}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -37,6 +49,12 @@ STEP=0
 DMESG_MARK=0
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOGDIR="/tmp/ibmveth-rx-cycle-${IFACE}-${TIMESTAMP}"
+
+# Pre-resize snapshots (set by set_rx)
+PREV_RX=0
+SNAP_INV=0
+SNAP_NOBUF=0
+SNAP_REPFAIL=0
 
 log() {
 	echo -e "${CYAN}[$(date '+%H:%M:%S')]${NC} $1"
@@ -79,7 +97,6 @@ count_rx_stat_queues() {
 }
 
 count_iface_irqs() {
-	# One /proc/interrupts line per RX queue IRQ for this netdev name
 	grep -c "[[:space:]]${IFACE}$\|[[:space:]]${IFACE}-" /proc/interrupts 2>/dev/null \
 		|| grep -c "${IFACE}" /proc/interrupts 2>/dev/null \
 		|| echo 0
@@ -100,6 +117,25 @@ stat_val() {
 	'
 }
 
+# Print "qid count" lines
+snapshot_rx_packets() {
+	ethtool -S "$IFACE" 2>/dev/null | awk '
+		/^[[:space:]]*rx([0-9]+)_packets:/ {
+			if (match($1, /[0-9]+/))
+				print substr($1, RSTART, RLENGTH), $2 + 0
+		}
+	'
+}
+
+snap_errors() {
+	SNAP_INV=$(stat_val rx_invalid_buffer)
+	SNAP_NOBUF=$(stat_val rx_no_buffer)
+	SNAP_REPFAIL=$(stat_val replenish_add_buff_failure)
+	SNAP_INV=${SNAP_INV:-0}
+	SNAP_NOBUF=${SNAP_NOBUF:-0}
+	SNAP_REPFAIL=${SNAP_REPFAIL:-0}
+}
+
 dmesg_mark() {
 	DMESG_MARK=$(dmesg | wc -l)
 }
@@ -117,13 +153,103 @@ dmesg_delta_file() {
 	DMESG_MARK=$cur
 }
 
-# Post-resize validation. Expect $1 = target RX queue count.
+# Compare error counters to pre-resize snapshot.
+check_error_deltas() {
+	local inv nobuf repfail d_inv d_nobuf d_rep
+	inv=$(stat_val rx_invalid_buffer); inv=${inv:-0}
+	nobuf=$(stat_val rx_no_buffer); nobuf=${nobuf:-0}
+	repfail=$(stat_val replenish_add_buff_failure); repfail=${repfail:-0}
+	d_inv=$((inv - SNAP_INV))
+	d_nobuf=$((nobuf - SNAP_NOBUF))
+	d_rep=$((repfail - SNAP_REPFAIL))
+
+	if [ "$d_inv" -le "$MAX_ERR_DELTA" ] && \
+	   [ "$d_nobuf" -le "$MAX_ERR_DELTA" ] && \
+	   [ "$d_rep" -le "$MAX_ERR_DELTA" ]; then
+		ok "error Δ: invalid=$d_inv no_buffer=$d_nobuf replenish_fail=$d_rep (max $MAX_ERR_DELTA)"
+	else
+		bad "error Δ spike: invalid=$d_inv no_buffer=$d_nobuf replenish_fail=$d_rep (abs now inv=$inv nobuf=$nobuf repfail=$repfail)"
+	fi
+}
+
+# Sample RX under load: bulk + survivor/new-queue checks.
+# Args: expect_rx prev_rx stepdir
+check_rx_under_load() {
+	local expect=$1
+	local prev=$2
+	local stepdir=$3
+	local before_f after_f wait=$RX_SAMPLE_SECS
+	local q c b d total=0 active=0 new_hit=0 need_active
+	local min_q=$MIN_ACTIVE_RX_QUEUES
+
+	# Scale-up: give the hypervisor hasher a longer window to hit new queues
+	if [ "$expect" -gt "$prev" ]; then
+		wait=$((RX_SAMPLE_SECS + 5))
+	fi
+
+	before_f="$stepdir/rx-before-sample.txt"
+	after_f="$stepdir/rx-after-sample.txt"
+
+	snapshot_rx_packets >"$before_f"
+	sleep "$wait"
+	snapshot_rx_packets >"$after_f"
+
+	echo "  RX sample ${wait}s (UNDER_RX=1, need bulk Δ>=$MIN_RX_DELTA):"
+	while read -r q c; do
+		b=$(awk -v q="$q" '$1 == q { print $2; exit }' "$before_f")
+		b=${b:-0}
+		d=$((c - b))
+		total=$((total + d))
+		if [ "$d" -gt 0 ]; then
+			active=$((active + 1))
+			echo "    rx${q}_packets Δ=$d"
+		fi
+		# New queues are qid >= previous RX count
+		if [ "$expect" -gt "$prev" ] && [ "$q" -ge "$prev" ] && [ "$d" -ge "$MIN_NEW_QUEUE_DELTA" ]; then
+			new_hit=$((new_hit + 1))
+		fi
+	done <"$after_f"
+
+	echo "    total Δ=$total active_queues=$active new_queue_hits=$new_hit (prev_rx=$prev → $expect)"
+
+	if [ "$total" -ge "$MIN_RX_DELTA" ]; then
+		ok "bulk RX after resize (Δ=$total >= $MIN_RX_DELTA)"
+	else
+		bad "bulk RX missing after resize (Δ=$total < $MIN_RX_DELTA) — keep lp7 iperf running"
+	fi
+
+	# Scale-down / steady MQ: survivors should spread when expect >= 4
+	if [ "$expect" -ge 4 ]; then
+		need_active=$min_q
+		if [ "$need_active" -gt "$expect" ]; then
+			need_active=$expect
+		fi
+		if [ "$active" -ge "$need_active" ]; then
+			ok "survivor/MQ spread: $active active queues (need >=$need_active)"
+		else
+			bad "survivor/MQ spread weak: only $active active queues (need >=$need_active)"
+		fi
+	elif [ "$expect" -ge 1 ] && [ "$total" -ge "$MIN_RX_DELTA" ]; then
+		ok "SQ/low-RX: traffic on remaining queue(s) (active=$active)"
+	fi
+
+	# Scale-up: at least one newly added queue must see packets
+	if [ "$expect" -gt "$prev" ] && [ "$expect" -ge 2 ]; then
+		if [ "$new_hit" -ge 1 ]; then
+			ok "scale-up: $new_hit new queue(s) (qid>=$prev) got traffic"
+		else
+			bad "scale-up: no new queue (qid>=$prev) got packets — multi-flow iperf required"
+		fi
+	fi
+}
+
+# Post-resize validation. Expect $1 = target RX queue count. $2 = label. $3 = previous RX.
 validate_after_resize() {
 	local expect=$1
 	local label=$2
+	local prev=${3:-0}
 	local stepdir dmesg_f stats_f
 	local got stats_n irq_n sysfs_n
-	local inv nobuf repfail
 	local link_flags
 
 	STEP=$((STEP + 1))
@@ -132,7 +258,7 @@ validate_after_resize() {
 	dmesg_f="$stepdir/dmesg.txt"
 	stats_f="$stepdir/ethtool-S.txt"
 
-	echo -e "  ${CYAN}Validation (${label}):${NC}"
+	echo -e "  ${CYAN}Validation (${label}) prev_rx=${prev} → ${expect}:${NC}"
 
 	# --- geometry ---
 	got=$(get_rx_current)
@@ -150,7 +276,6 @@ validate_after_resize() {
 	fi
 
 	irq_n=$(count_iface_irqs)
-	# Queue 0 may share naming; allow irq_n == expect (typical for MQ)
 	if [ "$irq_n" = "$expect" ]; then
 		ok "/proc/interrupts lines for ${IFACE}=$irq_n"
 	elif [ "$irq_n" -ge 1 ] && [ "$expect" -eq 1 ] && [ "$irq_n" -le 2 ]; then
@@ -176,23 +301,20 @@ validate_after_resize() {
 		bad "iface not UP: $link_flags"
 	fi
 
-	# --- ethtool -S snapshot + error counters ---
+	# --- ethtool -S snapshot + error *deltas* ---
 	ethtool -S "$IFACE" > "$stats_f" 2>/dev/null || true
-	inv=$(stat_val rx_invalid_buffer)
-	nobuf=$(stat_val rx_no_buffer)
-	repfail=$(stat_val replenish_add_buff_failure)
-	inv=${inv:-0}; nobuf=${nobuf:-0}; repfail=${repfail:-0}
-	if [ "$inv" = "0" ] && [ "$nobuf" = "0" ] && [ "$repfail" = "0" ]; then
-		ok "error counters: invalid=0 no_buffer=0 replenish_fail=0"
-	else
-		# Non-zero can be historical; still flag so operator looks
-		warn "error counters: invalid=$inv no_buffer=$nobuf replenish_fail=$repfail (see $stats_f)"
-	fi
+	check_error_deltas
 
-	# Show a short RX packet distribution snapshot (useful under iperf)
-	echo -n "  rx*_packets: "
+	echo -n "  rx*_packets (abs): "
 	awk '/^[[:space:]]*rx[0-9]+_packets:/ { printf "%s=%s ", $1, $2 }' "$stats_f"
 	echo ""
+
+	# --- under-load packet proof ---
+	if [ "$UNDER_RX" = "1" ]; then
+		check_rx_under_load "$expect" "$prev" "$stepdir"
+		# Re-check errors after the sample window (drops during traffic)
+		check_error_deltas
+	fi
 
 	# --- dmesg delta ---
 	dmesg_delta_file "$dmesg_f"
@@ -205,7 +327,6 @@ validate_after_resize() {
 	if grep -qiE "ibmveth.*${IFACE}.*Successfully resized to ${expect} RX|resized to ${expect} RX queues" "$dmesg_f"; then
 		ok "dmesg: Successfully resized to ${expect} RX queues"
 	elif grep -qiE "ibmveth.*${IFACE}" "$dmesg_f"; then
-		# Debug may use slightly different wording; still show ibmveth lines count
 		local n
 		n=$(grep -ciE "ibmveth|${IFACE}" "$dmesg_f" || true)
 		warn "dmesg: ${n} ibmveth/${IFACE} lines (no exact 'resized to ${expect}' match)"
@@ -215,7 +336,6 @@ validate_after_resize() {
 	fi
 
 	if grep -iE "ibmveth.*${IFACE}" "$dmesg_f" | grep -qiE 'error|fail|invalid correlator'; then
-		# "Failed" in successful path is rare; flag for review
 		warn "dmesg: ibmveth lines mention error/fail (review $dmesg_f)"
 		grep -iE "ibmveth.*${IFACE}" "$dmesg_f" | grep -iE 'error|fail|invalid' | tail -5 | sed 's/^/    /'
 	fi
@@ -229,7 +349,6 @@ validate_after_resize() {
 		fi
 	fi
 
-	# Persist irq snapshot
 	grep "${IFACE}" /proc/interrupts > "$stepdir/interrupts.txt" 2>/dev/null || true
 	echo ""
 }
@@ -237,8 +356,14 @@ validate_after_resize() {
 set_rx() {
 	local queues=$1
 	local label=$2
+	local prev
 
-	echo -e "${YELLOW}--- Setting RX = ${queues} (${label}) ---${NC}"
+	prev=$(get_rx_current)
+	prev=${prev:-0}
+	PREV_RX=$prev
+
+	echo -e "${YELLOW}--- Setting RX = ${queues} (${label}) [from ${prev}] ---${NC}"
+	snap_errors
 	dmesg_mark
 	if ! ethtool -L "$IFACE" rx "$queues"; then
 		bad "ethtool -L rx $queues failed"
@@ -246,9 +371,8 @@ set_rx() {
 	fi
 
 	sleep 1
-	validate_after_resize "$queues" "$label"
+	validate_after_resize "$queues" "$label" "$prev"
 	sleep "$DELAY"
-	# propagate FAIL from validate
 	[ "$FAIL" -eq 0 ]
 }
 
@@ -264,6 +388,7 @@ mkdir -p "$LOGDIR"
 MAX_RX=$(get_rx_max)
 CUR=$(get_rx_current)
 dmesg_mark
+snap_errors
 
 echo "=============================================="
 echo "  ibmveth RX Queue Cycle Test"
@@ -271,6 +396,7 @@ echo "  Interface: ${IFACE}"
 echo "  Current RX: ${CUR:-?}   Max used: ${MAX_RX}"
 echo "  Delay: ${DELAY}s"
 echo "  Peer ping: ${PEER:-disabled (set PEER=ip)}"
+echo "  UNDER_RX: ${UNDER_RX}  (bulk Δ>=${MIN_RX_DELTA}/${RX_SAMPLE_SECS}s)"
 echo "  Logs: $LOGDIR"
 echo "=============================================="
 echo ""
