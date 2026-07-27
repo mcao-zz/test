@@ -26,7 +26,7 @@ need_root() {
 }
 
 need_peer() {
-	[[ -n "$PEER" ]] || die "set PEER= (ping/iperf peer IPv4, no CIDR)"
+	[[ -n "$PEER" ]] || die "set PEER= on the sudo line (sudo clears exports), e.g. sudo IFACE=env9 PEER=192.168.100.2 $0"
 	PEER="${PEER%%/*}"
 }
 

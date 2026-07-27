@@ -206,34 +206,34 @@ cases derived from each commit message.
 Prefer **new automated cases in `lpar-tests/`**. Keep root scripts for bring-up and heavy one-shot suites; call them from `lpar-tests/lab-smoke.sh` / `t14-rx-cycle.sh`.
 
 ```bash
-export IFACE=env9 PEER=192.168.100.2
 cd lpar-tests
-sudo ./run-all.sh
+# sudo clears exported env — pass IFACE/PEER on the command line:
+sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
 # Flow: quiet → prompt to start lp7 iperf clients → verify RX → heavy → cleanup
 ```
 
 `run-all.sh` phases:
 
 1. **Quiet** — lab-smoke, smoke, t12, t8, t19, t16 (+ optional SQ close / -L)
-2. **Iperf gate** — starts `iperf3 -s` on DUT, prints lp7 client commands,
-   waits for Enter, checks `ethtool -S` RX counters increase
+2. **Iperf gate** — starts `iperf3 -s` on DUT (or reuses listeners), prints lp7
+   client commands, waits for Enter, checks `ethtool -S` RX counters increase
 3. **Heavy** — t14-rx-cycle, close-under-load RX=8, parallel-stress
-4. **Cleanup** — stop DUT iperf servers; final ping
+4. **Cleanup** — stop DUT iperf only if this run started them; final ping
 
 ```bash
-SKIP_HEAVY=1 sudo ./run-all.sh          # quiet only
-SKIP_QUIET=1 sudo ./run-all.sh          # heavy only (still prompts)
-NONINTERACTIVE=1 sudo ./run-all.sh      # no prompt; traffic must already flow
-SKIP_PARALLEL=1 SKIP_L_IPERF=1 sudo ./run-all.sh
+sudo IFACE=env9 PEER=192.168.100.2 SKIP_HEAVY=1 ./run-all.sh
+sudo IFACE=env9 PEER=192.168.100.2 SKIP_QUIET=1 ./run-all.sh
+sudo IFACE=env9 PEER=192.168.100.2 NONINTERACTIVE=1 ./run-all.sh
+sudo IFACE=env9 PEER=192.168.100.2 SKIP_PARALLEL=1 ./run-all.sh
 ```
 
-Piecemeal:
+Piecemeal (same `sudo VAR=...` pattern):
 
 ```bash
-sudo ./smoke.sh
-sudo ./t12-stats-debugfs.sh
-sudo ./t8-down-stash.sh
-sudo ./t19-set-channels.sh
-sudo ./t16-hcall-deltas.sh
-sudo LAB_FULL=1 ./lab-smoke.sh
+sudo IFACE=env9 PEER=192.168.100.2 ./smoke.sh
+sudo IFACE=env9 PEER=192.168.100.2 ./t12-stats-debugfs.sh
+sudo IFACE=env9 PEER=192.168.100.2 ./t8-down-stash.sh
+sudo IFACE=env9 PEER=192.168.100.2 ./t19-set-channels.sh
+sudo IFACE=env9 PEER=192.168.100.2 ./t16-hcall-deltas.sh
+sudo IFACE=env9 PEER=192.168.100.2 LAB_FULL=1 ./lab-smoke.sh
 ```
