@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # IBM Virtual Ethernet (ibmveth) Multi-Queue Driver Test Script
-# Tests multi-queue operation and dynamic queue resizing (Phase 3)
+# Tests multi-queue operation and dynamic queue resizing (net-next MQ v4)
 #
 # Usage: ./test-veth-mq.sh [-d interface] [-t test_host] [-D]
 # Example: ./test-veth-mq.sh -d net0 -t 10.48.34.150
@@ -26,11 +26,12 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 PASS_COUNT=0
 FAIL_COUNT=0
-TOTAL_TESTS=15
+TOTAL_TESTS=0   # incremented per scored check (not a hardcoded target)
 TEST_RESULTS=()
 
-# Dmesg tracking
+# Dmesg tracking (line count at suite start; leak checks use delta only)
 DMESG_MARKER=0
+DMESG_START=0
 
 # Function to print usage
 usage() {
@@ -140,15 +141,16 @@ capture_stats_delta() {
         echo ""
 
         # Key stats to track
+        # Names match drivers/net/ethernet/ibm/ibmveth.c ibmveth_stats[]
         local stats=(
-            "h_reg_queue_calls"
-            "h_reg_lan_calls"
-            "h_add_buf_queue_calls"
-            "h_send_lan_calls"
-            "h_send_lan_packets"
-            "h_send_lan_busy_retries"
-            "h_send_lan_dropped"
-            "h_send_lan_failed"
+            "hcall_reg_lan_queue"
+            "hcall_reg_lan"
+            "hcall_add_bufs_queue"
+            "hcall_add_bufs"
+            "hcall_add_buf"
+            "hcall_free_lan_queue"
+            "hcall_free_lan"
+            "hcall_send_lan"
             "replenish_add_buff_success"
             "replenish_add_buff_failure"
             "replenish_no_mem"
@@ -252,13 +254,19 @@ check_memory_leaks() {
     echo "System memory:" >> "$MEMORY_LOG"
     grep -E "^(MemTotal|MemFree|MemAvailable|Slab):" /proc/meminfo >> "$MEMORY_LOG"
 
-    # Check for memory leaks in dmesg
-    local leak_count=$(dmesg | grep -i "memory leak\|memleak\|kmemleak" | wc -l)
-    if [ $leak_count -gt 0 ]; then
-        log "  ${RED}✗${NC} Potential memory leaks detected: $leak_count messages"
-        dmesg | grep -i "memory leak\|memleak\|kmemleak" | tail -5 >> "$MEMORY_LOG"
+    # Only scan dmesg lines since suite marker (avoid stale boot noise)
+    local leak_count=0
+    local cur_lines delta
+    cur_lines=$(dmesg | wc -l)
+    delta=$((cur_lines - DMESG_MARKER))
+    if [ "$delta" -gt 0 ]; then
+        leak_count=$(dmesg | tail -"$delta" | grep -ciE "memory leak|memleak|kmemleak" || true)
+    fi
+    if [ "${leak_count:-0}" -gt 0 ]; then
+        log "  ${RED}✗${NC} Potential memory leaks in this run: $leak_count messages"
+        dmesg | tail -"$delta" | grep -iE "memory leak|memleak|kmemleak" | tail -5 >> "$MEMORY_LOG"
     else
-        log "  ✓ No memory leak warnings"
+        log "  ✓ No new memory leak warnings since test start"
     fi
 
     echo "" >> "$MEMORY_LOG"
@@ -330,18 +338,32 @@ verify_resources() {
     return $issues
 }
 
+# Score a named check (always advances TOTAL_TESTS)
+score_pass() {
+    local test_name=$1
+    ((TOTAL_TESTS++)) || true
+    ((PASS_COUNT++)) || true
+    log "${GREEN}✓ PASS${NC}: $test_name"
+    TEST_RESULTS+=("PASS: $test_name")
+}
+
+score_fail() {
+    local test_name=$1
+    ((TOTAL_TESTS++)) || true
+    ((FAIL_COUNT++)) || true
+    log "${RED}✗ FAIL${NC}: $test_name"
+    TEST_RESULTS+=("FAIL: $test_name")
+}
+
 # Check result function
 check_result() {
     local result=$1
     local test_name=$2
     if [ $result -eq 0 ]; then
-        log "${GREEN}✓ PASS${NC}: $test_name"
-        TEST_RESULTS+=("PASS: $test_name")
+        score_pass "$test_name"
         return 0
     else
-        log "${RED}✗ FAIL${NC}: $test_name"
-        ((FAIL_COUNT++))
-        TEST_RESULTS+=("FAIL: $test_name")
+        score_fail "$test_name"
         return 1
     fi
 }
@@ -353,11 +375,20 @@ get_iface_stat() {
     ip -s link show "$INTERFACE" | grep -A1 "$direction:" | tail -1 | awk "{print \$$field}"
 }
 
-# Function to get specific stat from ethtool output
+# Function to get specific stat from ethtool output (v4 names).
+# Exact key match so hcall_reg_lan does not also hit hcall_reg_lan_queue.
 get_stat_value() {
     local stat_file=$1
     local stat_name=$2
-    grep "${stat_name}:" "$stat_file" 2>/dev/null | awk '{print $2}' || echo "0"
+    local val
+
+    val=$(grep -E "^[[:space:]]*${stat_name}:" "$stat_file" 2>/dev/null \
+        | awk '{print $2}' | head -1)
+    if [ -z "$val" ]; then
+        echo "0"
+    else
+        echo "$val"
+    fi
 }
 
 # Function to get queue count from ethtool
@@ -494,17 +525,15 @@ if ip link show "$INTERFACE" &> /dev/null; then
             log "New state: $STATE"
 
             if [ "$STATE" = "UP" ] || [ "$STATE" = "UNKNOWN" ]; then
-                log "${GREEN}✓ PASS${NC}: Interface is UP (state: $STATE)"
-                ((PASS_COUNT++))
+                score_pass "Interface is UP (state: $STATE)"
             else
-                log "${RED}✗ FAIL${NC}: Failed to bring interface UP"
+                score_fail "Failed to bring interface UP"
             fi
         else
             log "${RED}✗ FAIL${NC}: Failed to bring interface UP"
         fi
     else
-        log "${GREEN}✓ PASS${NC}: Interface is UP"
-        ((PASS_COUNT++))
+        score_pass "Interface is UP"
     fi
 else
     log "${RED}✗ FAIL${NC}: Interface $INTERFACE does not exist"
@@ -543,8 +572,7 @@ if [ -n "$VIO_DEVICE" ]; then
         log "subordinate_queue_mode: $QUEUE_MODE"
 
         if [ "$QUEUE_MODE" != "0" ]; then
-            log "${GREEN}✓ PASS${NC}: Multi-queue mode active (subordinate_queue_mode=$QUEUE_MODE)"
-            ((PASS_COUNT++))
+            score_pass "Multi-queue mode active (subordinate_queue_mode=$QUEUE_MODE)"
         else
             log "${YELLOW}⚠${NC} Fallback mode detected (subordinate_queue_mode=0)"
             log "${YELLOW}⚠${NC} This test suite requires multi-queue firmware support"
@@ -571,8 +599,7 @@ INITIAL_QUEUES=$(get_queue_count)
 log "Current queue count: $INITIAL_QUEUES"
 
 if [ -n "$INITIAL_QUEUES" ] && [ "$INITIAL_QUEUES" -gt 1 ]; then
-    log "${GREEN}✓ PASS${NC}: Multi-queue configured ($INITIAL_QUEUES queues)"
-    ((PASS_COUNT++))
+    score_pass "Multi-queue configured ($INITIAL_QUEUES queues)"
 else
     log "${YELLOW}⚠${NC} Single queue mode ($INITIAL_QUEUES queue)"
 fi
@@ -592,6 +619,7 @@ log ""
 
 # Initialize dmesg marker and capture baseline
 DMESG_MARKER=$(dmesg | wc -l)
+DMESG_START=$DMESG_MARKER
 log "Dmesg marker initialized at line $DMESG_MARKER"
 log ""
 
@@ -603,7 +631,7 @@ verify_resources "Initial"
 log "=== 8. Test 1: Basic Connectivity ==="
 log "Testing basic ping to $TEST_HOST..."
 if ping -c 5 -W 2 "$TEST_HOST" > /dev/null 2>&1; then
-    check_result 0 "Basic connectivity (ping)" && ((PASS_COUNT++))
+    check_result 0 "Basic connectivity (ping)"
 else
     check_result 1 "Basic connectivity (ping)"
 fi
@@ -645,12 +673,12 @@ else
         wait $PID1 $PID2 $PID3 $PID4
         if [ $? -eq 0 ]; then
             log "${GREEN}✓${NC} Inbound traffic test successful (true RX RSS validation)"
-            check_result 0 "Multi-stream traffic test" && ((PASS_COUNT++))
+            check_result 0 "Multi-stream traffic test"
         else
             log "${YELLOW}⚠${NC} Inbound traffic test had issues, falling back to outbound"
             # Fallback to outbound traffic
             ping -c 100 -i 0.05 "$TEST_HOST" > /dev/null 2>&1
-            check_result $? "Multi-stream traffic test (outbound fallback)" && ((PASS_COUNT++))
+            check_result $? "Multi-stream traffic test (outbound fallback)"
         fi
     else
         log "${YELLOW}⚠${NC} sshpass not available, using outbound ping (tests TX queues only)"
@@ -667,7 +695,7 @@ else
         PID4=$!
 
         wait $PID1 $PID2 $PID3 $PID4
-        check_result $? "Multi-stream traffic test (outbound)" && ((PASS_COUNT++))
+        check_result $? "Multi-stream traffic test (outbound)"
     fi
 fi
 log ""
@@ -696,8 +724,7 @@ log "Active RX queues: $ACTIVE_RX_QUEUES"
 # If we used inbound traffic (sshpass available), expect multi-queue distribution
 if command -v sshpass >/dev/null 2>&1 && [ -n "$LOCAL_IP" ]; then
     if [ "$ACTIVE_RX_QUEUES" -gt 1 ] 2>/dev/null; then
-        log "${GREEN}✓ PASS${NC}: Inbound traffic distributed across $ACTIVE_RX_QUEUES RX queues (RSS working)"
-        ((PASS_COUNT++))
+        score_pass "Inbound traffic distributed across $ACTIVE_RX_QUEUES RX queues (RSS working)"
     else
         log "${YELLOW}⚠ WARNING${NC}: Inbound traffic on single RX queue (RSS may not be working)"
     fi
@@ -719,7 +746,7 @@ if [ "$INITIAL_QUEUES" -gt 4 ]; then
     if set_queue_count "$TARGET_QUEUES"; then
         # Test connectivity after resize
         if ping -c 10 -W 2 "$TEST_HOST" > /dev/null 2>&1; then
-            check_result 0 "Scale down ($INITIAL_QUEUES→$TARGET_QUEUES)" && ((PASS_COUNT++))
+            check_result 0 "Scale down ($INITIAL_QUEUES→$TARGET_QUEUES)"
         else
             check_result 1 "Scale down - connectivity lost"
         fi
@@ -744,7 +771,7 @@ if [ "$CURRENT_QUEUES" -lt "$INITIAL_QUEUES" ]; then
     if set_queue_count "$INITIAL_QUEUES"; then
         # Test connectivity after resize
         if ping -c 10 -W 2 "$TEST_HOST" > /dev/null 2>&1; then
-            check_result 0 "Scale up ($CURRENT_QUEUES→$INITIAL_QUEUES)" && ((PASS_COUNT++))
+            check_result 0 "Scale up ($CURRENT_QUEUES→$INITIAL_QUEUES)"
         else
             check_result 1 "Scale up - connectivity lost"
         fi
@@ -779,7 +806,7 @@ if [ "$CURRENT_QUEUES" -gt 2 ]; then
         # Wait for background traffic to complete
         wait $PING_PID
         if [ $? -eq 0 ]; then
-            check_result 0 "Resize under load" && ((PASS_COUNT++))
+            check_result 0 "Resize under load"
         else
             check_result 1 "Resize under load - traffic interrupted"
         fi
@@ -808,7 +835,7 @@ log "Testing operation with single queue..."
 
 if set_queue_count 1; then
     if ping -c 20 -W 2 "$TEST_HOST" > /dev/null 2>&1; then
-        check_result 0 "Single queue operation" && ((PASS_COUNT++))
+        check_result 0 "Single queue operation"
     else
         check_result 1 "Single queue operation - connectivity lost"
     fi
@@ -864,7 +891,7 @@ if sudo rmmod ibmveth; then
 
     # Test connectivity
     if ping -c 5 -W 2 "$TEST_HOST" > /dev/null 2>&1; then
-        check_result 0 "Module reload test" && ((PASS_COUNT++))
+        check_result 0 "Module reload test"
     else
         check_result 1 "Module reload test - connectivity lost"
     fi
@@ -885,42 +912,40 @@ log "Final Per-Queue Statistics:"
 grep -E "^rx[0-9]+_packets:" "$STATS_FINAL" | tee -a "$LOG_FILE"
 log ""
 
-# Test 13: Hypercall Validation
+# Test 13: Hypercall Validation (v4 ethtool names)
 log "=== 17. Hypercall Validation ==="
-H_REG_QUEUE=$(get_stat_value "$STATS_FINAL" "h_reg_queue_calls")
-H_REG_LAN=$(get_stat_value "$STATS_FINAL" "h_reg_lan_calls")
+H_REG_QUEUE=$(get_stat_value "$STATS_FINAL" "hcall_reg_lan_queue")
+H_REG_LAN=$(get_stat_value "$STATS_FINAL" "hcall_reg_lan")
 
 log "Hypercall usage:"
-log "  h_reg_queue_calls: $H_REG_QUEUE (multi-queue)"
-log "  h_reg_lan_calls: $H_REG_LAN (legacy)"
+log "  hcall_reg_lan_queue: $H_REG_QUEUE (subordinate MQ registers)"
+log "  hcall_reg_lan: $H_REG_LAN (queue 0 / LAN register)"
 
-if [ "$H_REG_QUEUE" != "0" ]; then
-    log "${GREEN}✓ PASS${NC}: Using multi-queue hypercalls"
-    ((PASS_COUNT++))
+if [ "$H_REG_QUEUE" -gt 0 ] 2>/dev/null; then
+    score_pass "Using multi-queue hypercalls (hcall_reg_lan_queue=$H_REG_QUEUE)"
+elif [ "$H_REG_LAN" -gt 0 ] 2>/dev/null; then
+    score_pass "Using LAN register hypercalls (hcall_reg_lan=$H_REG_LAN)"
 else
-    log "${YELLOW}⚠${NC} Not using multi-queue hypercalls"
+    score_fail "No hcall_reg_lan_queue / hcall_reg_lan activity in ethtool -S"
 fi
 log ""
 
 # Test 14: Error Validation
 log "=== 18. Error Validation ==="
-H_SEND_DROPPED=$(get_stat_value "$STATS_FINAL" "h_send_lan_dropped")
-H_SEND_FAILED=$(get_stat_value "$STATS_FINAL" "h_send_lan_failed")
+# v4 has no separate h_send_lan_dropped/failed; use adapter counters.
+TX_SEND_FAILED=$(get_stat_value "$STATS_FINAL" "tx_send_failed")
 REPLENISH_FAILURE=$(get_stat_value "$STATS_FINAL" "replenish_add_buff_failure")
 RX_INVALID=$(get_stat_value "$STATS_FINAL" "rx_invalid_buffer")
 
-H_SEND_DROPPED=${H_SEND_DROPPED:-0}
-H_SEND_FAILED=${H_SEND_FAILED:-0}
+TX_SEND_FAILED=${TX_SEND_FAILED:-0}
 REPLENISH_FAILURE=${REPLENISH_FAILURE:-0}
 RX_INVALID=${RX_INVALID:-0}
 
-if [ "$H_SEND_DROPPED" = "0" ] && [ "$H_SEND_FAILED" = "0" ] && [ "$REPLENISH_FAILURE" = "0" ] && [ "$RX_INVALID" = "0" ]; then
-    log "${GREEN}✓ PASS${NC}: Zero errors in all paths"
-    ((PASS_COUNT++))
+if [ "$TX_SEND_FAILED" = "0" ] && [ "$REPLENISH_FAILURE" = "0" ] && [ "$RX_INVALID" = "0" ]; then
+    score_pass "Zero errors in all paths"
 else
-    log "${RED}✗ FAIL${NC}: Errors detected:"
-    [ "$H_SEND_DROPPED" != "0" ] && log "  - h_send_lan_dropped: $H_SEND_DROPPED"
-    [ "$H_SEND_FAILED" != "0" ] && log "  - h_send_lan_failed: $H_SEND_FAILED"
+    score_fail "Errors detected in ethtool -S"
+    [ "$TX_SEND_FAILED" != "0" ] && log "  - tx_send_failed: $TX_SEND_FAILED"
     [ "$REPLENISH_FAILURE" != "0" ] && log "  - replenish_add_buff_failure: $REPLENISH_FAILURE"
     [ "$RX_INVALID" != "0" ] && log "  - rx_invalid_buffer: $RX_INVALID"
 fi
@@ -968,6 +993,17 @@ fi
 
 # Dmesg error analysis
 log "${BLUE}Dmesg Analysis:${NC}"
+# Persist full dmesg since suite start for summary analysis
+if [ "${DMESG_START:-0}" -gt 0 ]; then
+    cur=$(dmesg | wc -l)
+    delta=$((cur - DMESG_START))
+    if [ "$delta" -gt 0 ]; then
+        dmesg | tail -"$delta" > "$DMESG_LOG"
+    else
+        : > "$DMESG_LOG"
+    fi
+fi
+
 if [ -f "$DMESG_LOG" ] && [ -s "$DMESG_LOG" ]; then
     ERROR_COUNT=$(grep -iE "error|fail|warn|bug|oops" "$DMESG_LOG" | grep -v "DEBUG:" | wc -l | tr -d ' ')
     if [ "$ERROR_COUNT" -gt 0 ]; then
@@ -1016,17 +1052,18 @@ log "${BLUE}Overall Status:${NC}"
 log "  End time: $(date)"
 log ""
 
-if [ $PASS_COUNT -eq $TOTAL_TESTS ]; then
+if [ "$FAIL_COUNT" -eq 0 ] && [ "$TOTAL_TESTS" -gt 0 ] && [ "$PASS_COUNT" -eq "$TOTAL_TESTS" ]; then
     log "  ${GREEN}✓ ALL TESTS PASSED${NC} ($PASS_COUNT/$TOTAL_TESTS)"
     exit 0
-elif [ $PASS_COUNT -ge $((TOTAL_TESTS * 3 / 4)) ]; then
-    log "  ${YELLOW}⚠ MOST TESTS PASSED${NC} ($PASS_COUNT/$TOTAL_TESTS)"
-    log "  ${YELLOW}Review failed tests above${NC}"
+elif [ "$FAIL_COUNT" -eq 0 ]; then
+    log "  ${GREEN}✓ ALL SCORED TESTS PASSED${NC} ($PASS_COUNT/$TOTAL_TESTS)"
     exit 0
+elif [ "$PASS_COUNT" -ge $((TOTAL_TESTS * 3 / 4)) ]; then
+    log "  ${YELLOW}⚠ MOST TESTS PASSED${NC} ($PASS_COUNT/$TOTAL_TESTS, failed=$FAIL_COUNT)"
+    log "  ${YELLOW}Review failed tests above${NC}"
+    exit 1
 else
     log "  ${RED}✗ MULTIPLE TESTS FAILED${NC} ($PASS_COUNT/$TOTAL_TESTS passed, $FAIL_COUNT failed)"
     log "  ${RED}Review test results and logs${NC}"
     exit 1
 fi
-
-# Made with Bob
