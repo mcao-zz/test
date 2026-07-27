@@ -1,4 +1,4 @@
-# IBM veth / ibmveth Test Scripts
+# IBM veth / ibmveth Lab Test Scripts
 
 This repository contains lab scripts for validating the IBM Virtual
 Ethernet (`ibmveth`) driver, including both legacy single-queue behavior
@@ -8,19 +8,53 @@ The scripts are intended for PowerVM / pseries lab environments where
 you may need to:
 
 - verify that an `ibmveth` device is present and MQ-capable
+- load or reload `ibmveth` with debug enabled
 - install or reload an updated `ibmveth` module
 - run legacy and MQ functional tests
 - exercise queue resize paths
 - capture logs and statistics for debugging
+- reuse the same workflow across different lab setups
+
+## Lab Setup Inputs
+
+These scripts are meant to be reusable across different lab systems.
+
+The main environment-specific inputs are:
+
+- **interface/device name**
+  - examples: `net0`, `env9`
+- **remote test host IP**
+  - example: `192.168.100.2`
+- **whether debug should be enabled**
+  - usually `-D` for debug-enabled reload and test runs
+
+Do not hardcode one lab setup into your workflow. Instead, pass the
+target interface and test host explicitly when running the scripts.
+
+Examples:
+
+```bash
+./verify-mq-adapter.sh -d env9 -v
+./test-veth-mq.sh -d env9 -t 192.168.100.2
+./test-legacy-veth.sh -d env9 -t 192.168.100.2
+```
+
+On another setup, use different values:
+
+```bash
+./verify-mq-adapter.sh -d net0 -v
+./test-veth-mq.sh -d net0 -t 10.48.34.150
+./test-legacy-veth.sh -d net0 -t 10.48.34.150
+```
 
 ## Recommended Testing Workflow
 
-For most MQ validation, use this order:
+For most MQ validation, use this order.
 
 ### 1. Verify the adapter and environment
 
 ```bash
-sudo ./verify-mq-adapter.sh -d net0 -D -v
+sudo ./verify-mq-adapter.sh -d env9 -D -v
 ```
 
 This is the recommended first step. It reloads the module with dynamic
@@ -30,13 +64,13 @@ correctly for testing.
 If you only want a quick read-only check without reload:
 
 ```bash
-./verify-mq-adapter.sh -d net0 -v
+./verify-mq-adapter.sh -d env9 -v
 ```
 
 ### 2. Run the MQ functional test suite
 
 ```bash
-./test-veth-mq.sh -d net0 -t 10.48.34.150 -D
+./test-veth-mq.sh -d env9 -t 192.168.100.2 -D
 ```
 
 This exercises:
@@ -51,7 +85,7 @@ This exercises:
 ### 3. Optionally run legacy/single-queue comparison
 
 ```bash
-./test-legacy-veth.sh -d net0 -t 10.48.34.150 -D
+./test-legacy-veth.sh -d env9 -t 192.168.100.2 -D
 ```
 
 Use this when you want to compare MQ behavior against the classic
@@ -61,10 +95,41 @@ support.
 ### 4. Re-verify after testing
 
 ```bash
-./verify-mq-adapter.sh -d net0 -v
+./verify-mq-adapter.sh -d env9 -v
 ```
 
 This is useful as a post-test health check.
+
+---
+
+## Loading the Module with Debug Enabled
+
+If you want full initialization-path debug logs, enable dynamic debug at
+module load time rather than after the module is already loaded.
+
+Recommended direct commands:
+
+```bash
+sudo modprobe -r ibmveth
+sudo modprobe ibmveth dyndbg=+p
+```
+
+Then verify:
+
+```bash
+lsmod | grep ibmveth
+grep ibmveth /sys/kernel/debug/dynamic_debug/control | grep '=p' | head
+dmesg | tail -n 100
+```
+
+In normal test workflow, the easiest way to do this is:
+
+```bash
+sudo ./verify-mq-adapter.sh -d env9 -D -v
+```
+
+The `-D` option is intended to reload the module with debug enabled
+before verification, so it is usually the preferred entry point.
 
 ---
 
@@ -145,7 +210,7 @@ behavior, including:
 Typical usage:
 
 ```bash
-./test-veth-mq.sh -d net0 -t 10.48.34.150 -D
+./test-veth-mq.sh -d env9 -t 192.168.100.2 -D
 ```
 
 ---
@@ -162,7 +227,7 @@ useful when:
 Typical usage:
 
 ```bash
-./test-legacy-veth.sh -d net0 -t 10.48.34.150 -D
+./test-legacy-veth.sh -d env9 -t 192.168.100.2 -D
 ```
 
 ---
@@ -184,7 +249,7 @@ This is useful for capturing:
 Example:
 
 ```bash
-sudo ./verify-mq-adapter.sh -d net0 -D -v
+sudo ./verify-mq-adapter.sh -d env9 -D -v
 ```
 
 ---
@@ -245,17 +310,17 @@ tracked in git.
 ### MQ validation
 
 ```bash
-sudo ./verify-mq-adapter.sh -d net0 -D -v
-./test-veth-mq.sh -d net0 -t 10.48.34.150 -D
-./verify-mq-adapter.sh -d net0 -v
+sudo ./verify-mq-adapter.sh -d env9 -D -v
+./test-veth-mq.sh -d env9 -t 192.168.100.2 -D
+./verify-mq-adapter.sh -d env9 -v
 ```
 
 ### Legacy validation
 
 ```bash
-sudo ./verify-mq-adapter.sh -d net0 -D -v
-./test-legacy-veth.sh -d net0 -t 10.48.34.150 -D
-./verify-mq-adapter.sh -d net0 -v
+sudo ./verify-mq-adapter.sh -d env9 -D -v
+./test-legacy-veth.sh -d env9 -t 192.168.100.2 -D
+./verify-mq-adapter.sh -d env9 -v
 ```
 
 ---
