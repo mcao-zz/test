@@ -50,9 +50,13 @@ if [[ "${SKIP_QUIET:-0}" != 1 ]]; then
 	[[ "${SKIP_LAB:-0}" = 1 ]] || run lab-smoke "$DIR/lab-smoke.sh"
 	[[ "${SKIP_SMOKE:-0}" = 1 ]] || run smoke "$DIR/smoke.sh"
 	[[ "${SKIP_STATS:-0}" = 1 ]] || run t12-stats "$DIR/t12-stats-debugfs.sh"
+	[[ "${SKIP_T10:-0}" = 1 ]] || run t10-lifetime "$DIR/t10-stats-lifetime.sh"
+	[[ "${SKIP_T11:-0}" = 1 ]] || run t11-debugfs "$DIR/t11-debugfs-geometry.sh"
 	[[ "${SKIP_STASH:-0}" = 1 ]] || run t8-stash "$DIR/t8-down-stash.sh"
+	[[ "${SKIP_T17:-0}" = 1 ]] || run t17-down-irqs "$DIR/t17-down-no-live-irqs.sh"
 	[[ "${SKIP_CHANNELS:-0}" = 1 ]] || run t19-channels "$DIR/t19-set-channels.sh"
 	[[ "${SKIP_HCALL:-0}" = 1 ]] || run t16-hcall "$DIR/t16-hcall-deltas.sh"
+	[[ "${SKIP_T20:-0}" = 1 ]] || run t20-reload "$DIR/t20-reload-restore-mq.sh"
 	# Quiet extras: no auto-outbound iperf (that hid the lp7 inbound gate)
 	[[ "${SKIP_CLOSE_SQ:-0}" = 1 ]] || \
 		run close-sq env RX=1 ROUNDS=10 IPERF=0 "$DIR/close-under-load.sh"

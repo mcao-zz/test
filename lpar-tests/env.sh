@@ -109,6 +109,10 @@ count_rx_stat_rows() {
 	ethtool -S "$IFACE" 2>/dev/null | grep -cE '^[[:space:]]*rx[0-9]+_packets:' || echo 0
 }
 
+count_tx_stat_rows() {
+	ethtool -S "$IFACE" 2>/dev/null | grep -cE '^[[:space:]]*tx[0-9]+_packets:' || echo 0
+}
+
 count_iface_irqs() {
 	grep -c "${IFACE}" /proc/interrupts 2>/dev/null || echo 0
 }
@@ -116,6 +120,13 @@ count_iface_irqs() {
 stat_val() {
 	local name=$1
 	ethtool -S "$IFACE" 2>/dev/null | awk -v n="$name" '$1 == n":" { print $2; exit }'
+}
+
+current_tx() {
+	ethtool -l "$IFACE" 2>/dev/null | awk '
+		/^Current hardware settings:/ { cur=1; next }
+		cur && /^[[:space:]]*TX:/ { print $2; exit }
+	'
 }
 
 # Fail unless published RX / -S rows / IRQ lines all match N
@@ -129,6 +140,101 @@ assert_rx_geometry() {
 	[[ "$stats" == "$n" ]] || die "ethtool -S rx*_packets rows=$stats want $n"
 	[[ "$irqs" == "$n" ]] || die "/proc/interrupts $IFACE lines=$irqs want $n"
 	ok "geometry RX=$n (ethtool -l / -S / irqs)"
+}
+
+# Assert ethtool -l TX matches N; optionally tx*_packets row count if present.
+assert_tx_geometry() {
+	local n=$1
+	local got rows
+	got=$(current_tx)
+	[[ -n "$got" ]] || die "ethtool -l TX not parseable"
+	[[ "$got" == "$n" ]] || die "ethtool -l TX=$got want $n"
+	rows=$(count_tx_stat_rows)
+	if [[ "${rows:-0}" -gt 0 ]]; then
+		[[ "$rows" == "$n" ]] || die "ethtool -S tx*_packets rows=$rows want $n"
+		ok "geometry TX=$n (ethtool -l / -S)"
+	else
+		ok "geometry TX=$n (ethtool -l; no tx*_packets rows)"
+	fi
+}
+
+# Path to this iface's debugfs buffer_pools (netdev name).
+iface_buffer_pools() {
+	local f="/sys/kernel/debug/${IFACE}/buffer_pools"
+	[[ -r "$f" ]] || return 1
+	echo "$f"
+}
+
+# Count distinct Queue IDs in buffer_pools (skip header/separator).
+count_debugfs_queue_rows() {
+	local f=${1:-}
+	[[ -n "$f" && -r "$f" ]] || { echo 0; return; }
+	awk '
+		BEGIN { n = 0 }
+		/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+/ {
+			q = $1
+			if (!(q in seen)) { seen[q] = 1; n++ }
+		}
+		END { print n+0 }
+	' "$f"
+}
+
+# Bounded ping recovery after stress (default 30s).
+ping_recover() {
+	local secs=${1:-${PING_RECOVER_SECS:-30}}
+	local i
+	need_peer
+	iface_up
+	for ((i = 1; i <= secs; i++)); do
+		if ping -c 1 -W 1 "$PEER" >/dev/null 2>&1; then
+			ok "ping $PEER recovered in ${i}s"
+			return 0
+		fi
+		sleep 1
+	done
+	die "ping $PEER did not recover within ${secs}s"
+}
+
+# Snapshot / compare core error counters (absolute Δ since snap).
+: "${SNAP_INV:=0}"
+: "${SNAP_NOBUF:=0}"
+: "${SNAP_REPFAIL:=0}"
+: "${MAX_ERR_DELTA:=0}"
+
+snap_core_errors() {
+	SNAP_INV=$(stat_val rx_invalid_buffer); SNAP_INV=${SNAP_INV:-0}
+	SNAP_NOBUF=$(stat_val rx_no_buffer); SNAP_NOBUF=${SNAP_NOBUF:-0}
+	SNAP_REPFAIL=$(stat_val replenish_add_buff_failure); SNAP_REPFAIL=${SNAP_REPFAIL:-0}
+}
+
+check_core_error_deltas() {
+	local label=${1:-errors}
+	local inv nobuf repfail d_inv d_nobuf d_rep
+	inv=$(stat_val rx_invalid_buffer); inv=${inv:-0}
+	nobuf=$(stat_val rx_no_buffer); nobuf=${nobuf:-0}
+	repfail=$(stat_val replenish_add_buff_failure); repfail=${repfail:-0}
+	d_inv=$((inv - SNAP_INV))
+	d_nobuf=$((nobuf - SNAP_NOBUF))
+	d_rep=$((repfail - SNAP_REPFAIL))
+	log "$label: error Δ invalid=$d_inv no_buffer=$d_nobuf replenish_fail=$d_rep"
+	[[ "$d_inv" -le "$MAX_ERR_DELTA" ]] || die "$label: rx_invalid_buffer Δ=$d_inv > $MAX_ERR_DELTA"
+	[[ "$d_nobuf" -le "$MAX_ERR_DELTA" ]] || die "$label: rx_no_buffer Δ=$d_nobuf > $MAX_ERR_DELTA"
+	[[ "$d_rep" -le "$MAX_ERR_DELTA" ]] || die "$label: replenish_add_buff_failure Δ=$d_rep > $MAX_ERR_DELTA"
+	ok "$label: error deltas within $MAX_ERR_DELTA"
+}
+
+# Save/restore IPv4 on IFACE (module reload recreates netdev).
+save_iface_ipv4() {
+	ip -4 -o addr show dev "$IFACE" 2>/dev/null | awk '{print $4}' | head -1
+}
+
+restore_iface_ipv4() {
+	local cidr=$1
+	[[ -n "$cidr" ]] || return 0
+	if ! ip -4 -o addr show dev "$IFACE" 2>/dev/null | grep -q "$cidr"; then
+		ip addr add "$cidr" dev "$IFACE" 2>/dev/null || \
+			log "WARN: could not restore $cidr on $IFACE (configure manually if ping fails)"
+	fi
 }
 
 clamp_rx_list() {

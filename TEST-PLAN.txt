@@ -228,17 +228,22 @@ Auto harness (preferred for new tests):
   lpar-tests/env.sh              — IFACE/PEER, geometry helpers
   lpar-tests/run-all.sh          — ordered suite
   lpar-tests/smoke.sh            — T1+T3
+  lpar-tests/t10-stats-lifetime.sh — P10 stats across ifdown/up
+  lpar-tests/t11-debugfs-geometry.sh — P11 debugfs vs RX geometry
   lpar-tests/t12-stats-debugfs.sh — D11/T12 ethtool names + debugfs
-  lpar-tests/t8-down-stash.sh    — T8/T17 P13 stash
+  lpar-tests/t8-down-stash.sh    — T8 P13 stash
+  lpar-tests/t17-down-no-live-irqs.sh — T17 no live IRQs while down
   lpar-tests/t14-rx-cycle.sh     — T14 wraps ../rx_queue_size.sh
   lpar-tests/t16-hcall-deltas.sh — T16 hcall_* counters
-  lpar-tests/t19-set-channels.sh — D13/T19 set_channels up+stash
+  lpar-tests/t19-set-channels.sh — D13/T19 set_channels (+ TX_SET)
+  lpar-tests/t20-reload-restore-mq.sh — T20 module reload restores MQ
   lpar-tests/lab-smoke.sh        — wraps verify (+ optional test-veth-mq)
 
 Deep-dive by commit message: TEST-PLAN-DEEP-DIVE.txt (D01–D14)
   lpar-tests/close-under-load.sh
   lpar-tests/ethtool-L-cycle.sh
-  lpar-tests/parallel-stress.sh
+  lpar-tests/parallel-stress.sh  — error Δ + ping_recover artifacts
+  lpar-tests/t-mq-rx-under-load.sh — bulk + MQ spread proof
 
 Lab monoliths (root — bring-up / deep dive):
   verify-mq-adapter.sh

@@ -1,5 +1,9 @@
 #!/bin/bash
 # T10 / T11 — parallel -L cycling + ifdown/up (correlator / close races)
+#
+# After stress: snapshot ethtool -S / IRQs / dmesg; fail if error Δ exceeds
+# MAX_ERR_DELTA; require ping recovery within PING_RECOVER_SECS.
+#
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=env.sh
@@ -7,10 +11,12 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 
 : "${DURATION:=300}"   # seconds
 : "${IPERF:=1}"
+: "${PING_RECOVER_SECS:=30}"
 
 need_root
 need_peer
 save_dmesg_mark
+snap_core_errors
 
 log "=== parallel stress ${DURATION}s on $IFACE ==="
 iface_up
@@ -69,11 +75,27 @@ cleanup
 trap - EXIT
 sleep 2
 iface_up
-ping_ok
+
+# Artifacts
+ethtool -S "$IFACE" >"$LOGDIR/parallel-ethtool-S.txt" 2>/dev/null || true
+grep "${IFACE}" /proc/interrupts >"$LOGDIR/parallel-interrupts.txt" 2>/dev/null || true
+dmesg_delta "$LOGDIR/parallel-dmesg.txt"
+log "artifacts: $LOGDIR/parallel-{ethtool-S,interrupts,dmesg}.txt"
+
+# Under close/resize races, transient errors can tick — bounded threshold.
+: "${PARALLEL_MAX_ERR_DELTA:=1000}"
+_saved_max=$MAX_ERR_DELTA
+MAX_ERR_DELTA=$PARALLEL_MAX_ERR_DELTA
+check_core_error_deltas "post-parallel"
+MAX_ERR_DELTA=$_saved_max
+
+ping_recover "$PING_RECOVER_SECS"
 check_no_lockup
 
-# Soft check: correlator messages are OK if rate-limited; hang is not
-if dmesg | tail -500 | grep -qi 'bad correlator'; then
+if grep -qiE 'Oops|BUG:|Call Trace|hard LOCKUP|soft lockup' "$LOGDIR/parallel-dmesg.txt"; then
+	die "Oops/BUG/lockup in parallel dmesg delta"
+fi
+if grep -qi 'bad correlator' "$LOGDIR/parallel-dmesg.txt"; then
 	log "NOTE: bad correlator messages seen (expected under stress if rate-limited)"
 fi
 
