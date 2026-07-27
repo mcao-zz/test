@@ -69,6 +69,13 @@ while getopts "d:t:Dh" opt; do
     esac
 done
 
+# -t wants a host/IP only (not CIDR). Accept accidental "192.168.100.2/24".
+TEST_HOST="${TEST_HOST%%/*}"
+if [ -z "$TEST_HOST" ]; then
+    echo "Error: empty test host after parsing -t" >&2
+    usage
+fi
+
 # Set file paths AFTER parsing arguments so INTERFACE is correct
 LOG_FILE="$RESULTS_DIR/test_${INTERFACE}_${TIMESTAMP}.log"
 STATS_BEFORE="$RESULTS_DIR/stats_before_${INTERFACE}_${TIMESTAMP}.txt"
@@ -450,7 +457,7 @@ capture_dmesg() {
 
 # Start test
 log "========================================"
-log "IBM veth Multi-Queue Test Suite (Phase 3)"
+log "IBM veth Multi-Queue Test Suite (MQ v4)"
 log "========================================"
 log "Interface: $INTERFACE"
 log "Test Host: $TEST_HOST"
