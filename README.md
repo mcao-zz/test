@@ -108,20 +108,32 @@ sudo ./test-veth-mq.sh -d env9 -t 192.168.100.2
 
 Cycles RX queue count on an interface (default `env9`):
 
-1. baseline → 16 (or max supported)
-2. 16 → 1
+1. baseline → max (from `ethtool -l`, capped at 16)
+2. max → 1
 3. forward ramp 2…max
 4. reverse ramp (max−1)…1
 
+After **each** step it checks:
+
+| Check | Why |
+|-------|-----|
+| `ethtool -l` RX count | Published queue count |
+| `ethtool -S` `rxN_packets` rows | Per-queue stats match |
+| `/proc/interrupts` lines for iface | IRQ count matches RX |
+| `sysfs` `queues/rx-*` | Kernel RX queue objects |
+| iface `UP` | Link still usable |
+| `rx_invalid` / `rx_no_buffer` / replenish fail | Error counters |
+| `rx*_packets` snapshot | Distribution under iperf |
+| dmesg delta | “Successfully resized…”, no Oops/BUG |
+| optional `PEER` ping | Connectivity after resize |
+
 ```bash
 sudo ./rx_queue_size.sh [iface] [delay_seconds]
-# examples:
-sudo ./rx_queue_size.sh env9
-sudo ./rx_queue_size.sh env9 2
+sudo PEER=192.168.100.2 ./rx_queue_size.sh env9 2
 ```
 
-It validates each `ethtool -L` against `ethtool -l` and stops on failure.
-It does **not** generate traffic — start iperf (above) first for
+Per-step logs: `/tmp/ibmveth-rx-cycle-<iface>-<timestamp>/`.  
+Does **not** generate traffic — start iperf (above) first for
 resize-under-load.
 
 ---
