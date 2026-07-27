@@ -26,7 +26,9 @@ run() {
 
 # Plan scripts
 [[ "${SKIP_SMOKE:-0}" = 1 ]] || run smoke "$DIR/smoke.sh"
+[[ "${SKIP_STATS:-0}" = 1 ]] || run t12-stats "$DIR/t12-stats-debugfs.sh"
 [[ "${SKIP_STASH:-0}" = 1 ]] || run t8-stash "$DIR/t8-down-stash.sh"
+[[ "${SKIP_CHANNELS:-0}" = 1 ]] || run t19-channels "$DIR/t19-set-channels.sh"
 [[ "${SKIP_HCALL:-0}" = 1 ]] || run t16-hcall "$DIR/t16-hcall-deltas.sh"
 [[ "${SKIP_T14:-0}" = 1 ]] || run t14-cycle "$DIR/t14-rx-cycle.sh"
 
@@ -37,3 +39,4 @@ run() {
 [[ "${SKIP_PARALLEL:-0}" = 1 ]] || run parallel env DURATION="${STRESS_SECS:-180}" "$DIR/parallel-stress.sh"
 
 log "ALL REQUESTED TESTS PASSED — see $LOGDIR"
+log "Deep-dive by patch: $ROOT/TEST-PLAN-DEEP-DIVE.txt"

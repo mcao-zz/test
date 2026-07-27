@@ -192,7 +192,9 @@ counts. Prefer console or an alternate management path.
 
 ## Validation plan
 
-See **[TEST-PLAN.txt](TEST-PLAN.txt)** for T1–T20.
+See **[TEST-PLAN.txt](TEST-PLAN.txt)** for T1–T20 and
+**[TEST-PLAN-DEEP-DIVE.txt](TEST-PLAN-DEEP-DIVE.txt)** for per-patch D*
+cases derived from each commit message.
 
 ### Long-term layout (combined)
 
@@ -208,7 +210,9 @@ export IFACE=env9 PEER=192.168.100.2
 cd lpar-tests
 sudo ./run-all.sh                    # full ordered suite
 sudo ./smoke.sh                      # T1+T3
+sudo ./t12-stats-debugfs.sh          # P10/P11 names + debugfs
 sudo ./t8-down-stash.sh              # P13 stash
+sudo ./t19-set-channels.sh           # P13 set_channels
 sudo ./t16-hcall-deltas.sh           # v4 hcall_* names
 sudo ./t14-rx-cycle.sh               # wraps ../rx_queue_size.sh
 sudo LAB_FULL=1 ./lab-smoke.sh       # verify + test-veth-mq.sh

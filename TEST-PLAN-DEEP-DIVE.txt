@@ -1,0 +1,195 @@
+ibmveth MQ v4 — Deep-dive test plan by patch
+============================================
+Tip: a8dfd6177669 (14 patches after 805185b7c7a1)
+Branch: veth-mq-upstream-netnext-v4-review
+Companion: TEST-PLAN.txt (T1–T20), lpar-tests/
+
+How to use
+----------
+* P01–P08 are mostly SQ-runtime / structural. Deep-dive = compile bisect
+  (W=1), open/close stress at rx=1, and “no MQ yet” checks until P09.
+* P09+ are behavior changes. Prefer the D* cases below on tip; for
+  bisect blame, re-run the same D* after checking out that commit.
+* Automate under lpar-tests/ when cheap; mark MANUAL otherwise.
+
+--------------------------------------------------------------------
+Per-patch review → deep-dive cases
+--------------------------------------------------------------------
+
+P01 — Add MQ RX hypercall wrappers and call definitions
+  Claims: plumbing only; no open/close wiring; wrappers match existing
+          hcall style (H_REG/ADD/FREE_*_QUEUE + with_handle for Q0).
+  Deep dive:
+    D01-build   allmodconfig / LPAR W=1: ibmveth.o builds; no unused
+                statics (wrappers unused until later — acceptable only
+                if series policy allows; v4 introduces with first use
+                for helpers, wrappers may land early by design).
+    D01-nm      nm ibmveth.o | grep h_reg_logical_lan_queue (present)
+  Auto: w1-bisect-build.sh / check-unused-statics.sh on main
+
+P02 — Prepare MQ RX adapter data structures
+  Claims: layout-only; MAX_RX_QUEUES still 1; index-0 mechanical move;
+          no hcall/rx_qstats types yet (moved to P07/P10).
+  Deep dive:
+    D02-sq      ethtool -l shows RX max 1 (or pre-enable max); open/close
+                50×; ping OK — behavior == pre-series SQ.
+    D02-structs grep / sizeof: no rx_qstats/hcall_stats in .h at this
+                commit (bisect check).
+  Auto: lpar-tests/smoke.sh with forced rx=1 after checkout (MANUAL tip)
+
+P03 — Refactor RX resource allocation for MQ RX bring-up
+  Claims: filter/rx_queue helpers wired; SQ runtime; -ENOMEM on TX LTB
+          fail still returned.
+  Deep dive:
+    D03-openfail  Inject mem pressure / fault open mid-path if lab can;
+                  else: rapid ifdown/up 100× under light ping — no leak
+                  of DMA mappings (watch dmesg IOMMU / dma errors).
+    D03-close     ifdown with traffic; ifup; ping — helpers free cleanly.
+
+P04 — Refactor buffer pool management for per-queue MQ RX
+  Claims: queue-local pools; alloc-based free; 64KiB pool off by default
+          at std MTU; Q0 template copied to 1..N later.
+  Deep dive:
+    D04-poolsysfs  cat poolN/{size,active,num}; toggle active; traffic.
+    D04-mtu        raise MTU to need large pool; confirm large pool
+                   activates; restore MTU.
+    D04-mem        compare slab/Mem before/after 50 open/close — no
+                   steady climb (rough).
+  Auto: partial via verify-mq-adapter + pool sysfs (MANUAL mtu)
+
+P05 — Refactor RX interrupt control for MQ RX queues
+  Claims: enable/disable/setup/cleanup; mask-before-napi on close
+          (intentional vs classic); schedule_rx_queue for process kicks;
+          SQ still no PHYP unmask in setup.
+  Deep dive:
+    D05-close-storm  flood ping from peer; ifdown — no soft lockup;
+                     dmesg no IRQ storm after mask.
+    D05-netpoll      if CONFIG_NET_POLL_CONTROLLER: ethtool -r or
+                     netconsole kick path still works.
+    D05-q0-irq       after ifdown/up, queue0 still uses netdev->irq
+                     (no "invalid IRQ (0)" — also v4 leave queue_irq[0]).
+
+P06 — Refactor TX resource allocation in open/close paths
+  Claims: alloc_tx at end of open; partial TX fail does not double-free;
+          TX already MQ via ethtool -L.
+  Deep dive:
+    D06-tx-L     ethtool -L tx 1..max while up; iperf TX; no crash.
+    D06-tx-down  ifdown; ethtool -L tx N; ifup; ethtool -l TX==N.
+  Auto: extend later t19; MANUAL for now
+
+P07 — Add RX queue register/deregister helpers for MQ
+  Claims: register_rx_queues / free_all_queues / hcall_stats first;
+          H_FUNCTION not yet hard-fail policy of P09; SQ path still
+          legacy register for Q0 when !multi_queue.
+  Deep dive:
+    D07-hcall-S  ethtool -S | grep hcall_  (names appear from P07/P10)
+    D07-sq-reg   on tip with rx=1: hcall_reg_lan increments on open;
+                 hcall_reg_lan_queue stays 0 (or low if prior MQ).
+
+P08 — Add queue-aware RX buffer submit helper for MQ
+  Claims: replenish_task(queue); batch hcall; fallback paths.
+  Deep dive:
+    D08-replenish  under RX iperf, replenish_add_buff_success climbs;
+                   replenish_add_buff_failure stays 0.
+    D08-nobuf      starve buffers (tiny pools / stress) carefully —
+                   rx_no_buffer / no_buffer_drops move; recover.
+
+P09 — Enable multi-queue RX receive path  *** behavior change ***
+  Claims: probe MQ bit → num_rx_queues; MAX=16; MQ open replenish then
+          unmask; SQ classic kick; H_FUNCTION hard open fail; dispose
+          subordinates on setup fail; leave Q0 netdev->irq.
+  Deep dive:
+    D09-probe    dmesg open: "multi-queue mode" / registered N queues;
+                 ethtool -l max_rx=16 when MQ FW.
+    D09-open-mq  T3/T4 — replenish-before-unmask: ifup under flood,
+                 low loss vs historical enable-first.
+    D09-open-sq  ethtool -L rx 1; ifdown/up; still classic (no multi
+                 unmask loop).
+    D09-hfunc    MANUAL if lab can force H_FUNCTION on subordinate —
+                 open must fail hard, no silent SQ fallback.
+    D09-dispose  force open fail after partial subordinate register
+                 (hard) — no virq leak (irq count / /proc/interrupts).
+  Auto: smoke.sh, t8, lab-smoke; H_FUNCTION MANUAL
+
+P10 — Add per-queue RX and TX statistics collection
+  Claims: probe-lifetime qstats; ethtool -S per-queue + summed globals;
+          get_channels max_rx depends on multi_queue; poolN sysfs probe
+          fail-fast.
+  Deep dive:
+    D10-names    ethtool -S | grep -E 'hcall_|rx[0-9]+_|tx[0-9]+_'
+    D10-lifetime ifdown; ethtool -S still readable; ifup; counters
+                 continue (not wiped incorrectly).
+    D10-rss      multi-flow RX (T15); several rxN_packets increase.
+    D10-channels ethtool -l max RX == 16 iff MQ; ==1 if not.
+  Auto: t16-hcall-deltas.sh; T15 MANUAL iperf
+
+P11 — Expose per-queue buffer pool details via debugfs
+  Claims: buffer_pools debugfs table all queues; poolN sysfs ABI kept
+          for Q0 config only.
+  Deep dive:
+    D11-debugfs  find /sys/kernel/debug -name buffer_pools; cat;
+                 rows for each queue×pool.
+    D11-sysfs    pool0.. still under netdev; writing size/active still
+                 affects Q0 template (document expectation).
+  Auto: add t11-debugfs.sh (below)
+
+P12 — Implement incremental MQ RX queue resize
+  Claims: scale-up order alloc→reg→irq→publish→replenish→napi→enable;
+          scale-down mask→napi_disable→drain→dereg→free; dispose bounds
+          MAX_RX_QUEUES; smp_rmb on drain.
+  Deep dive:
+    D12-geom     T14 rx_queue_size — geometry every step.
+    D12-order    dyndbg: confirm dmesg order matches claim on 4→5.
+    D12-partial  MANUAL: fault mid scale-up — surviving queues stay up.
+    D12-drain    scale-down under RX flood — no hang; drain messages OK.
+  Auto: t14-rx-cycle.sh, t16; order MANUAL with -D
+
+P13 — Wire ethtool set_channels to MQ RX queue resize
+  Claims: !IFF_UP stash num_rx_queues only (no allocate); up path
+          resize then TX LTB adjust; -EOPNOTSUPP rx>1 without MQ;
+          TX i=old_tx init; always return rc.
+  Deep dive:
+    D13-stash    T8/T17 t8-down-stash.sh
+    D13-txrx     ethtool -L rx N tx M while up; both stick; traffic OK.
+    D13-eopnotsupp  on non-MQ FW: -L rx 2 fails cleanly (T13).
+  Auto: t8-down-stash.sh; t19 MANUAL/partial
+
+P14 — Fix MQ RX poll and shutdown hangs after queue resize
+  Claims: skip bad correlator / advance ring; rate-limited msg;
+          napi complete when down/disable pending; tailroom check;
+          napi_complete_done budget return.
+  Deep dive:
+    D14-hang     T10 parallel-stress / long rx_queue_size under iperf
+                 10+ min — no soft lockup.
+    D14-correl   after wild -L, dmesg may show rate-limited bad
+                 correlator; rx_invalid_buffer may climb; ping recovers.
+    D14-close    ifdown during -L (T11) — close completes < few sec.
+    D14-tailroom MANUAL oversized / truncated desc if injectable.
+  Auto: parallel-stress.sh, t14 under load
+
+--------------------------------------------------------------------
+Suggested deep-dive matrix (tip, one LPAR day)
+--------------------------------------------------------------------
+Morning smoke:     lab-smoke + smoke + t8 + t16 + t14
+Under RX iperf:    T15 + t14 + t16 deltas
+Close stress:      close-under-load RX=1 and RX=8
+Hang hunt:         parallel-stress 10–15 min
+Diagnostics:       debugfs buffer_pools + ethtool -S names
+Legacy (if avail): T13
+
+--------------------------------------------------------------------
+Commit-message quality notes (review, not blockers)
+--------------------------------------------------------------------
+P01–P08: Strong “why” and bisect story; good for reviewers.
+P05: Explicit about intentional close-order change — test D05-close-storm.
+P09: Best behavior doc (open MQ vs SQ) — tests must cover both.
+P10: Probe-lifetime qstats — D10-lifetime matters for ifdown races.
+P11: Clear sysfs vs debugfs split — D11 both surfaces.
+P12/P13: Resize vs stash split matches T14 vs T8.
+P14: Hang scenario well stated — T10/T11 are the proof.
+
+Gaps vs messages (still MANUAL / future scripts):
+  * H_FUNCTION hard fail (P09)
+  * Mid-scale-up fault inject (P12)
+  * Dual-update stats wipe across ifdown (P10) — negative test
+  * napi_complete_done budget path (P14) — needs tracing
