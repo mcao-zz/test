@@ -209,17 +209,20 @@ Prefer **new automated cases in `lpar-tests/`**. Keep root scripts for bring-up 
 cd lpar-tests
 # sudo clears exported env — pass IFACE/PEER on the command line:
 sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
-# Flow: quiet → type 'yes' after starting lp7 iperf → verify RX → heavy → cleanup
-# If iperf3 lives under /usr/local/bin and sudo still can't find it:
-#   sudo IFACE=env9 PEER=192.168.100.2 IPERF3=$(command -v iperf3) ./run-all.sh
+# Flow: quiet → type 'yes' after starting lp7 iperf → prove bulk+MQ RX →
+#       heavy with MQ RX re-proofs between stages → cleanup
+# Thresholds (defaults): MIN_RX_DELTA=10000 / 5s, MIN_ACTIVE_RX_QUEUES=2, MQ_PROOF_RX=8
+# Standalone MQ RX proof (iperf clients already running):
+#   sudo IFACE=env9 PEER=192.168.100.2 ./t-mq-rx-under-load.sh
 ```
 
 `run-all.sh` phases:
 
 1. **Quiet** — lab-smoke, smoke, t12, t8, t19, t16 (+ SQ close / -L with `IPERF=0`)
-2. **Iperf gate** — starts `iperf3 -s` on DUT, prints lp7 client commands on
-   `/dev/tty`, waits until you type `yes`, checks `ethtool -S` RX counters rise
-3. **Heavy** — t14-rx-cycle, close-under-load RX=8, parallel-stress (under inbound)
+2. **Iperf + MQ RX proof** — start `iperf3 -s`, wait for `yes`, require bulk
+   `rx*_packets` Δ ≥ `MIN_RX_DELTA` and ≥ `MIN_ACTIVE_RX_QUEUES` queues active
+   at `MQ_PROOF_RX` (rejects ping-sized noise)
+3. **Heavy** — t14 / close-mq / parallel / -L, with MQ RX re-proof after each
 4. **Cleanup** — stop only iperf servers this run started; final ping
 
 ```bash

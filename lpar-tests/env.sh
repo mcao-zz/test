@@ -182,10 +182,34 @@ check_no_oops() {
 # Space-separated PIDs of iperf3 -s we started (do not killall — may kill user clients).
 : "${IPERF_SERVER_PIDS:=}"
 
+# Proof thresholds for real bulk inbound (not ping/ARP noise).
+# Override: MIN_RX_DELTA=5000 RX_SAMPLE_SECS=5 MIN_ACTIVE_RX_QUEUES=2
+: "${RX_SAMPLE_SECS:=5}"
+: "${MIN_RX_DELTA:=10000}"          # total rx*_packets increase over sample
+: "${MIN_ACTIVE_RX_QUEUES:=2}"      # distinct queues that must see Δ>0 when MQ
+: "${MQ_PROOF_RX:=8}"               # RX queue count used for MQ spread proof
+
 sum_rx_packets() {
 	ethtool -S "$IFACE" 2>/dev/null | awk '
 		/^[[:space:]]*rx[0-9]+_packets:/ { s += $2 }
 		END { print s+0 }
+	'
+}
+
+count_rx_queue_rows() {
+	ethtool -S "$IFACE" 2>/dev/null | awk '
+		/^[[:space:]]*rx[0-9]+_packets:/ { n++ }
+		END { print n+0 }
+	'
+}
+
+# Print "qid count" lines for each rxN_packets counter.
+snapshot_rx_queue_packets() {
+	ethtool -S "$IFACE" 2>/dev/null | awk '
+		/^[[:space:]]*rx([0-9]+)_packets:/ {
+			if (match($1, /[0-9]+/))
+				print substr($1, RSTART, RLENGTH), $2 + 0
+		}
 	'
 }
 
@@ -245,7 +269,7 @@ stop_iperf_servers() {
 	sleep 1
 }
 
-# Return 0 if RX packet counters advance within ~wait seconds
+# Soft check: any RX counter increase (legacy / ping-level). Prefer prove_*.
 inbound_rx_flowing() {
 	local wait=${1:-5}
 	local a b
@@ -256,8 +280,91 @@ inbound_rx_flowing() {
 	[[ "$b" -gt "$a" ]]
 }
 
-# Interactive: print lp7 commands, wait for "yes", verify inbound RX.
+# Hard proof: bulk inbound RX (rejects ping/ARP-sized Δ).
+# Returns 0 on success. Logs per-queue Δ. Does not require MQ spread.
+prove_bulk_inbound_rx() {
+	local label=${1:-bulk-rx}
+	local wait=${2:-$RX_SAMPLE_SECS}
+	local min_delta=${3:-$MIN_RX_DELTA}
+	local q c before_file after_file total=0 active=0 d nq b
+
+	before_file=$(mktemp)
+	after_file=$(mktemp)
+	snapshot_rx_queue_packets >"$before_file"
+	nq=$(wc -l <"$before_file" | tr -d ' ')
+	sleep "$wait"
+	snapshot_rx_queue_packets >"$after_file"
+
+	log "=== $label: ${wait}s sample on $IFACE (need total Δ>=$min_delta; queues=$nq) ==="
+	while read -r q c; do
+		b=$(awk -v q="$q" '$1 == q { print $2; exit }' "$before_file")
+		b=${b:-0}
+		d=$((c - b))
+		total=$((total + d))
+		if [[ "$d" -gt 0 ]]; then
+			active=$((active + 1))
+			log "  rx${q}_packets Δ=$d"
+		fi
+	done <"$after_file"
+	rm -f "$before_file" "$after_file"
+
+	log "$label: total Δ=$total over ${wait}s across $active queue(s)"
+	[[ "$total" -ge "$min_delta" ]] || return 1
+	ok "$label: bulk inbound proven (Δ=$total >= $min_delta)"
+	return 0
+}
+
+# Hard proof: MQ RX under load — bulk + packets on multiple queues.
+# Sets RX to MQ_PROOF_RX first (unless SKIP_SET_RX=1).
+prove_mq_rx_under_load() {
+	local label=${1:-mq-rx-under-load}
+	local wait=${RX_SAMPLE_SECS}
+	local min_delta=${MIN_RX_DELTA}
+	local min_q=${MIN_ACTIVE_RX_QUEUES}
+	local q c before_file after_file total=0 active=0 d nq want_rx b
+
+	want_rx=${MQ_PROOF_RX}
+	if [[ "${SKIP_SET_RX:-0}" != 1 ]]; then
+		iface_up
+		ethtool_rx "$want_rx" || die "$label: ethtool -L rx $want_rx failed"
+		sleep 1
+		nq=$(count_rx_queue_rows)
+		[[ "$nq" -eq "$want_rx" ]] || die "$label: expected $want_rx rx*_packets rows, got $nq"
+	fi
+
+	before_file=$(mktemp)
+	after_file=$(mktemp)
+	snapshot_rx_queue_packets >"$before_file"
+	nq=$(wc -l <"$before_file" | tr -d ' ')
+	sleep "$wait"
+	snapshot_rx_queue_packets >"$after_file"
+
+	log "=== $label: ${wait}s MQ sample (need Δ>=$min_delta AND >=$min_q active queues; nq=$nq) ==="
+	while read -r q c; do
+		b=$(awk -v q="$q" '$1 == q { print $2; exit }' "$before_file")
+		b=${b:-0}
+		d=$((c - b))
+		total=$((total + d))
+		if [[ "$d" -gt 0 ]]; then
+			active=$((active + 1))
+			log "  rx${q}_packets Δ=$d"
+		fi
+	done <"$after_file"
+	rm -f "$before_file" "$after_file"
+
+	log "$label: total Δ=$total active_queues=$active/$nq"
+	[[ "$total" -ge "$min_delta" ]] || \
+		die "$label FAIL: bulk RX not proven (Δ=$total < $min_delta) — keep lp7 iperf running"
+	if [[ "$nq" -ge 4 ]]; then
+		[[ "$active" -ge "$min_q" ]] || \
+			die "$label FAIL: MQ spread not proven (only $active queue(s) got packets, need >=$min_q). Check lp7 multi-port/multi-P clients."
+	fi
+	ok "$label: MQ RX under load proven (Δ=$total, $active/$nq queues)"
+}
+
+# Interactive: print lp7 commands, wait for "yes", prove bulk + MQ RX.
 # NONINTERACTIVE=1 skips prompts (still requires traffic already running).
+# ALLOW_WEAK_RX=1 restores old "continue anyway" escape hatch (not for evidence).
 prompt_start_inbound_iperf() {
 	local dut_ip tries=0 ans=
 
@@ -270,20 +377,22 @@ prompt_start_inbound_iperf() {
 
 	start_iperf_servers
 
-	# Force visibility even if someone scrolls past quiet-phase noise
 	cat >/dev/tty <<EOF
 
 **********************************************************************
-*  STOP — start inbound iperf on lp7 ($PEER) before heavy tests     *
+*  STOP — start inbound iperf on lp7 ($PEER) and KEEP IT RUNNING    *
 **********************************************************************
-On PEER ($PEER), run:
+On PEER ($PEER), run (long enough for the whole heavy phase):
 
   export DUT_IP=$dut_ip
   for p in $IPERF_PORTS; do
-    iperf3 -c \$DUT_IP -t 600 -P 4 -p \$p &
+    iperf3 -c \$DUT_IP -t 3600 -P 4 -p \$p &
   done
+  wait
 
-DUT is listening as $dut_ip on ports: $IPERF_PORTS
+Need bulk RX (Δ>=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s) and packets on
+>=$MIN_ACTIVE_RX_QUEUES queues at RX=$MQ_PROOF_RX. Leave clients up.
+DUT is listening as $dut_ip on: $IPERF_PORTS
 **********************************************************************
 
 EOF
@@ -301,20 +410,30 @@ EOF
 	fi
 
 	while true; do
-		if inbound_rx_flowing 4; then
-			ok "inbound RX traffic detected on $IFACE"
-			return 0
+		if prove_bulk_inbound_rx "gate-bulk" "$RX_SAMPLE_SECS" "$MIN_RX_DELTA"; then
+			break
 		fi
 		tries=$((tries + 1))
-		log "WARN: no RX packet increase (try $tries)"
+		log "WARN: bulk inbound not proven (try $tries) — Δ must be >= $MIN_RX_DELTA"
 		if [[ "${NONINTERACTIVE:-0}" = 1 ]]; then
-			die "inbound RX not detected (start lp7 clients first, or unset NONINTERACTIVE)"
+			die "inbound bulk RX not detected (start lp7 clients first)"
 		fi
-		tty_read "[R]etry check, [A]bort heavy phase, [C]ontinue anyway? " ans
-		case "${ans:-R}" in
-			A|a) die "aborted: inbound iperf not confirmed" ;;
-			C|c) log "WARN: continuing without confirmed inbound RX"; return 0 ;;
-			*) ;;
-		esac
+		if [[ "${ALLOW_WEAK_RX:-0}" = 1 ]]; then
+			tty_read "[R]etry, [A]bort, [C]ontinue weak (ALLOW_WEAK_RX)? " ans
+			case "${ans:-R}" in
+				A|a) die "aborted: inbound iperf not confirmed" ;;
+				C|c) log "WARN: weak RX — not valid MQ-under-load evidence"; return 0 ;;
+				*) ;;
+			esac
+		else
+			tty_read "[R]etry check or [A]bort? " ans
+			case "${ans:-R}" in
+				A|a) die "aborted: inbound iperf not confirmed" ;;
+				*) ;;
+			esac
+		fi
 	done
+
+	# Geometry for MQ spread, then prove multi-queue receive.
+	prove_mq_rx_under_load "gate-mq-rx"
 }

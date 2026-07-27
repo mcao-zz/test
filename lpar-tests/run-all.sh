@@ -3,9 +3,10 @@
 #
 #   1) Quiet: smoke, t8, t12, t19, t16
 #   2) Interactive: start DUT iperf servers, prompt for lp7 clients,
-#      verify inbound RX counters move
-#   3) Heavy: t14-rx-cycle, close-under-load RX=8, parallel-stress
-#   4) Stop iperf (if we started it); final ping
+#      prove bulk inbound + MQ RX spread under load
+#   3) Heavy: re-prove MQ RX, t14, re-prove, close/parallel/-L with
+#      MQ RX proofs between stages (lp7 clients must stay up)
+#   4) Final MQ RX proof + ping
 #
 # Usage:
 #   IFACE=env9 PEER=192.168.100.2 sudo ./run-all.sh
@@ -13,6 +14,7 @@
 #   SKIP_QUIET=1 ...          # heavy only (still prompts for iperf)
 #   NONINTERACTIVE=1 ...      # no prompts; inbound must already be flowing
 #   SKIP_PARALLEL=1 ...       # skip hang-hunt stress
+#   MIN_RX_DELTA=10000 MIN_ACTIVE_RX_QUEUES=2 MQ_PROOF_RX=8 ...
 #
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -24,6 +26,7 @@ need_peer
 
 log "Logs under $LOGDIR"
 log "IFACE=$IFACE PEER=$PEER ROOT=$ROOT"
+log "MQ proof: MIN_RX_DELTA=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s, MIN_ACTIVE_RX_QUEUES=$MIN_ACTIVE_RX_QUEUES, MQ_PROOF_RX=$MQ_PROOF_RX"
 log "See $ROOT/TEST-PLAN.txt / TEST-PLAN-DEEP-DIVE.txt"
 
 run() {
@@ -60,28 +63,47 @@ else
 fi
 
 # ------------------------------------------------------------------
-# Phase 2 — Interactive inbound iperf gate
+# Phase 2 — Interactive inbound iperf gate + MQ RX proof
 # ------------------------------------------------------------------
 if [[ "${SKIP_HEAVY:-0}" != 1 ]]; then
-	log "========== PHASE 2: INBOUND IPERF GATE =========="
+	log "========== PHASE 2: INBOUND IPERF + MQ RX PROOF =========="
 	iface_up
 	ping_ok
 	prompt_start_inbound_iperf
 
 	# ------------------------------------------------------------------
-	# Phase 3 — Heavy under confirmed inbound RX
+	# Phase 3 — Heavy under proven inbound MQ RX
 	# ------------------------------------------------------------------
-	log "========== PHASE 3: HEAVY (under inbound RX) =========="
+	log "========== PHASE 3: HEAVY (under proven inbound MQ RX) =========="
+
+	# Explicit proof before geometry churn (gate already proved once).
+	[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
+		run mq-rx-pre "$DIR/t-mq-rx-under-load.sh" pre-heavy
+
 	[[ "${SKIP_T14:-0}" = 1 ]] || run t14-cycle "$DIR/t14-rx-cycle.sh"
+	# T14 ends at RX=1 — restore MQ and re-prove inbound still alive + spread.
+	[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
+		run mq-rx-post-t14 "$DIR/t-mq-rx-under-load.sh" post-t14
+
 	[[ "${SKIP_CLOSE_MQ:-0}" = 1 ]] || \
 		run close-mq env RX=8 ROUNDS="${HEAVY_ROUNDS:-20}" IPERF=0 \
 			"$DIR/close-under-load.sh"
+	[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
+		run mq-rx-post-close "$DIR/t-mq-rx-under-load.sh" post-close-mq
+
+	# Parallel: outbound optional; proof relies on inbound from lp7.
 	[[ "${SKIP_PARALLEL:-0}" = 1 ]] || \
-		run parallel env DURATION="${STRESS_SECS:-300}" "$DIR/parallel-stress.sh"
-	# Optional: cover-letter -L pattern under load (no outbound iperf)
+		run parallel env DURATION="${STRESS_SECS:-300}" IPERF=0 \
+			"$DIR/parallel-stress.sh"
+	[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
+		run mq-rx-post-parallel "$DIR/t-mq-rx-under-load.sh" post-parallel
+
 	[[ "${SKIP_L_IPERF:-0}" = 1 ]] || \
 		run L-under-rx env LOOPS=3 IPERF=0 "$DIR/ethtool-L-cycle.sh"
-	ok "heavy phase complete"
+	[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
+		run mq-rx-final "$DIR/t-mq-rx-under-load.sh" post-heavy-final
+
+	ok "heavy phase complete (MQ RX under load proven)"
 else
 	log "SKIP_HEAVY=1 — skipping inbound gate + heavy phase"
 fi
