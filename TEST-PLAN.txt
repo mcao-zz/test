@@ -32,8 +32,14 @@ v4 deltas to validate (beyond v3 plan)
 * IRQ ownership: cleanup leaves queue_irq[0] (= netdev->irq); subordinates
   disposed once (no double-dispose storm / wrong virq reuse)
 * Stats: ethtool -S uses hcall_* names; per-queue rxN_*/txN_* after P10
-* P14: aggressive -L must not hang poll on bad correlator; close completes
+  remain readable across ifdown/up, while visible per-queue rows follow the
+  current published queue geometry
+* P14: aggressive -L must not hang poll on bad correlator; close completes;
+  bad correlator / tailroom faults should degrade into invalid-buffer stats
+  and recovery, not crashes
 * set_channels TX+RX while up/down (P12/P13 wiring)
+* queue0 IRQ ownership remains with netdev->irq; only subordinate virqs are
+  created/disposed across MQ register/resize/close paths
 
 Prerequisites
 -------------
@@ -70,6 +76,10 @@ Pass criteria (global)
 * After each major test: ping -c 3 $PEER OK
 * After each -L: ethtool -l RX, ethtool -S rxN_packets rows, and
   /proc/interrupts lines for $IFACE all equal the target count
+* queue0 must remain usable across close/open and resize churn; fail on
+  "queue 0 has invalid IRQ (0)" or repeated request_irq reopen failures
+* After heavy stress (T10/T11/T15), one explicit reopen sanity check should
+  still restore MQ geometry and connectivity
 
 --------------------------------------------------------------------
 Test details
@@ -131,6 +141,9 @@ T12 — stats / debugfs smoke
   ethtool -S $IFACE | grep -E 'hcall_|rx[0-9]+_packets|tx[0-9]+_packets'
   Expect v4 names: hcall_reg_lan_queue, hcall_reg_lan, hcall_add_bufs_queue, …
   After MQ traffic: several rxN_packets increase (not only rx0)
+  ifdown; ethtool -S still readable; ifup; stats still readable
+  Note: visible per-queue rows follow current RX geometry, not historical
+        max geometry, but aggregate counters remain meaningful
   find /sys/kernel/debug -name buffer_pools 2>/dev/null | head
   Pass: readable; no oops
 
@@ -171,30 +184,40 @@ T17 — Down-state stash does not touch live IRQs
   ifup with rx 8; note IRQ lines
   ifdown; ethtool -L rx 2; confirm IRQ count still reflects down/closed
     state (no live subordinate IRQs while down)
+  dmesg while down must not show subordinate queue registration success
+    from the stash operation itself
   ifup; ethtool -l RX: 2; IRQ lines == 2
-  Pass: no allocate-while-down; open publishes stashed count
+  Pass: no allocate-while-down; no subordinate IRQ creation/registration
+        while down; open publishes stashed count
 
 T18 — Close/open preserves queue0 IRQ identity
   Before close: read /proc/interrupts for $IFACE (queue0 line)
   ifdown; ifup (rx>=1)
   Pass: interface has working IRQ; ping OK
-  Note: hard to assert exact virq number; fail if open fails request_irq
-        or "queue 0 has invalid IRQ (0)" in dmesg (v4 leave queue_irq[0])
+  Note: hard to assert exact virq number; fail if open fails request_irq,
+        if queue0 becomes invalid, or if dmesg shows
+        "queue 0 has invalid IRQ (0)" (v4 leaves queue_irq[0] owned by
+        netdev->irq while only subordinate mappings are disposed)
 
 T19 — set_channels TX and RX together
   ethtool -l $IFACE
   ethtool -L $IFACE rx 4 tx 2   # or separate if driver requires
   (ibmveth set_channels handles both; use ethtool -L rx/tx as supported)
   ethtool -l shows expected rx/tx; ping + short iperf OK
+  Verify TX current count matches requested TX, not just RX
   ifdown; ethtool -L rx 8; ifup; ethtool -l RX: 8
-  Pass: combined path and down-stash still work
+  Pass: combined path and down-stash still work; RX stash remains deferred
+        until open; TX geometry is correct after the operation
 
 T20 — Module reload restores MQ
   ethtool -L rx 8; verify MQ
   modprobe -r ibmveth; modprobe ibmveth dyndbg=+p
   (or verify-mq-adapter -D)
   Bring $IFACE up; ethtool -l RX >= 1; ping OK
-  Pass: open complete; hcall_reg_lan_queue > 0 if rx>1; no stuck NAPI
+  Re-establish MQ geometry explicitly after reload (for example RX=8) and
+  verify queue rows / IRQ lines match again
+  Pass: open complete; hcall_reg_lan_queue > 0 if rx>1; no stuck NAPI;
+        MQ geometry can be restored after reload
 
 --------------------------------------------------------------------
 Suggested order

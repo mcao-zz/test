@@ -118,7 +118,9 @@ P10 — Add per-queue RX and TX statistics collection
   Deep dive:
     D10-names    ethtool -S | grep -E 'hcall_|rx[0-9]+_|tx[0-9]+_'
     D10-lifetime ifdown; ethtool -S still readable; ifup; counters
-                 continue (not wiped incorrectly).
+                 continue (not wiped incorrectly). Visible per-queue rows
+                 follow current published RX geometry; aggregate counters
+                 remain meaningful across ifdown/up.
     D10-rss      multi-flow RX (T15); several rxN_packets increase.
     D10-channels ethtool -l max RX == 16 iff MQ; ==1 if not.
   Auto: t16-hcall-deltas.sh; T15 MANUAL iperf
@@ -128,9 +130,11 @@ P11 — Expose per-queue buffer pool details via debugfs
           for Q0 config only.
   Deep dive:
     D11-debugfs  find /sys/kernel/debug -name buffer_pools; cat;
-                 rows for each queue×pool.
+                 rows for each queue×pool; after resize, debugfs queue rows
+                 should track current RX geometry.
     D11-sysfs    pool0.. still under netdev; writing size/active still
-                 affects Q0 template (document expectation).
+                 affects Q0 template (document expectation). Do not describe
+                 sysfs as the per-queue visibility surface.
   Auto: add t11-debugfs.sh (below)
 
 P12 — Implement incremental MQ RX queue resize
@@ -149,8 +153,10 @@ P13 — Wire ethtool set_channels to MQ RX queue resize
           resize then TX LTB adjust; -EOPNOTSUPP rx>1 without MQ;
           TX i=old_tx init; always return rc.
   Deep dive:
-    D13-stash    T8/T17 t8-down-stash.sh
-    D13-txrx     ethtool -L rx N tx M while up; both stick; traffic OK.
+    D13-stash    T8/T17 t8-down-stash.sh; while down, no subordinate IRQ
+                 creation or queue-registration success should appear.
+    D13-txrx     ethtool -L rx N tx M while up; both stick; traffic OK;
+                 verify TX current count, not only RX.
     D13-eopnotsupp  on non-MQ FW: -L rx 2 fails cleanly (T13).
   Auto: t8-down-stash.sh; t19 MANUAL/partial
 
@@ -160,11 +166,13 @@ P14 — Fix MQ RX poll and shutdown hangs after queue resize
           napi_complete_done budget return.
   Deep dive:
     D14-hang     T10 parallel-stress / long rx_queue_size under iperf
-                 10+ min — no soft lockup.
+                 10+ min — no soft lockup; explicit reopen sanity after
+                 stress should still restore MQ geometry.
     D14-correl   after wild -L, dmesg may show rate-limited bad
                  correlator; rx_invalid_buffer may climb; ping recovers.
     D14-close    ifdown during -L (T11) — close completes < few sec.
-    D14-tailroom MANUAL oversized / truncated desc if injectable.
+    D14-tailroom MANUAL oversized / truncated desc if injectable; expected
+                 outcome is invalid-buffer accounting/recovery, not crash.
   Auto: parallel-stress.sh, t14 under load
 
 --------------------------------------------------------------------
@@ -191,5 +199,7 @@ P14: Hang scenario well stated — T10/T11 are the proof.
 Gaps vs messages (still MANUAL / future scripts):
   * H_FUNCTION hard fail (P09)
   * Mid-scale-up fault inject (P12)
-  * Dual-update stats wipe across ifdown (P10) — negative test
+  * Stats lifetime / visibility semantics across ifdown with geometry change
+    (P10) — stronger automated negative/consistency test still useful
+  * queue0 IRQ ownership / reopen failure signature capture (P09/P12/P14)
   * napi_complete_done budget path (P14) — needs tracing

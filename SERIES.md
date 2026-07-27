@@ -22,3 +22,4 @@ Update this when the kernel tip or patch count changes.
 | 2026-07-23 | Restacked hollow P9-P14 so subjects match diffs; tip tree unchanged |
 | 2026-07-27 | Tip `a8dfd6177669`: qstats define move; IRQ ownership (leave queue_irq[0], open dispose unwind); P13 message why down-state RX is stashed |
 | 2026-07-27 | TEST-PLAN on veth-mq-tests: added T14–T20 for v4 (geometry, stash, hcall deltas, set_channels, reload) |
+| 2026-07-27 | Test plan sharpened after re-review: queue0 IRQ ownership/reopen checks, stats visibility semantics vs current geometry, explicit P14 invalid-buffer recovery expectations, stronger down-state stash and TX verification notes |
