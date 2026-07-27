@@ -1,9 +1,14 @@
 # Source from other scripts:  . "$(dirname "$0")/env.sh"
 # Override on command line:  IFACE=env9 PEER=192.168.100.2 ./smoke.sh
 
+# sudo's secure_path often omits /usr/local/bin (where iperf3 commonly lives).
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+export PATH
+
 : "${IFACE:=env9}"
 : "${PEER:=}"                          # required for ping/iperf tests
 : "${DUT_IP:=}"                        # this LPAR's test IP (optional)
+: "${IPERF3:=}"                        # optional absolute path to iperf3
 : "${IPERF_TIME:=60}"
 : "${IPERF_PARALLEL:=4}"
 : "${CYCLE_SLEEP:=0.5}"
@@ -28,6 +33,37 @@ need_root() {
 need_peer() {
 	[[ -n "$PEER" ]] || die "set PEER= on the sudo line (sudo clears exports), e.g. sudo IFACE=env9 PEER=192.168.100.2 $0"
 	PEER="${PEER%%/*}"
+}
+
+# Resolve iperf3 into IPERF3 (handles sudo secure_path).
+# Returns 0 if found. Override with IPERF3=/full/path/iperf3.
+find_iperf3() {
+	local c
+	if [[ -n "${IPERF3:-}" ]]; then
+		[[ -x "$IPERF3" ]] || die "IPERF3=$IPERF3 is not executable"
+		return 0
+	fi
+	IPERF3=$(command -v iperf3 2>/dev/null || true)
+	if [[ -n "$IPERF3" && -x "$IPERF3" ]]; then
+		return 0
+	fi
+	for c in /usr/local/bin/iperf3 /usr/bin/iperf3 /bin/iperf3; do
+		if [[ -x "$c" ]]; then
+			IPERF3=$c
+			return 0
+		fi
+	done
+	IPERF3=
+	return 1
+}
+
+need_iperf3() {
+	find_iperf3 || die "iperf3 not found (install it, or set IPERF3=/path/to/iperf3). PATH=$PATH"
+	ok "using iperf3 at $IPERF3"
+}
+
+have_iperf3() {
+	find_iperf3
 }
 
 iface_up() {
@@ -143,7 +179,8 @@ check_no_oops() {
 }
 
 : "${IPERF_PORTS:=5201 5202 5203 5204 5205 5206 5207 5208 5209 5210 5211 5212 5213 5214 5215 5216}"
-: "${IPERF_STARTED_BY_US:=0}"
+# Space-separated PIDs of iperf3 -s we started (do not killall — may kill user clients).
+: "${IPERF_SERVER_PIDS:=}"
 
 sum_rx_packets() {
 	ethtool -S "$IFACE" 2>/dev/null | awk '
@@ -152,32 +189,60 @@ sum_rx_packets() {
 	'
 }
 
-# Start iperf3 -s on DUT (RX sink). Records IPERF_STARTED_BY_US=1.
+# Read a line from the controlling terminal (works under sudo).
+tty_read() {
+	local prompt=$1
+	local __var=$2
+	local line
+	if [[ ! -r /dev/tty ]]; then
+		die "no /dev/tty — run from an interactive shell (or NONINTERACTIVE=1)"
+	fi
+	# Print prompt to stderr so it shows even if stdout is redirected
+	printf '%s' "$prompt" >/dev/tty
+	IFS= read -r line </dev/tty || die "failed reading from /dev/tty"
+	printf '\n' >/dev/tty
+	printf -v "$__var" '%s' "$line"
+}
+
+# Start iperf3 -s on DUT (RX sink). Tracks only PIDs we spawn.
 start_iperf_servers() {
-	local p n=0
-	command -v iperf3 >/dev/null || die "iperf3 not installed on DUT"
+	local p n=0 pid
+	need_iperf3
 	for p in $IPERF_PORTS; do
 		if ss -ltn 2>/dev/null | grep -q ":${p} "; then
 			log "iperf3 already listening on :$p"
 		else
-			iperf3 -s -p "$p" -D || die "failed to start iperf3 -s -p $p"
+			"$IPERF3" -s -p "$p" -D || die "failed to start $IPERF3 -s -p $p"
 			n=$((n + 1))
+			# Best-effort PID capture for later cleanup
+			pid=$(ss -ltnp 2>/dev/null | awk -v p=":$p" '
+				$0 ~ p {
+					if (match($0, /pid=[0-9]+/)) {
+						print substr($0, RSTART+4, RLENGTH-4)
+						exit
+					}
+				}')
+			[[ -n "$pid" ]] && IPERF_SERVER_PIDS+=" $pid"
 		fi
 	done
-	IPERF_STARTED_BY_US=1
 	sleep 1
 	n=$(ss -ltnp 2>/dev/null | grep -c iperf3 || echo 0)
 	[[ "$n" -ge 1 ]] || die "no iperf3 listeners after start"
-	ok "iperf3 servers: $n listener(s) on DUT"
+	ok "iperf3 servers: $n listener(s) on DUT ($IPERF3)"
 	ss -ltnp 2>/dev/null | grep iperf3 | head -5 | while read -r line; do log "  $line"; done
 }
 
 stop_iperf_servers() {
-	if [[ "${IPERF_STARTED_BY_US:-0}" = 1 ]]; then
-		log "stopping iperf3 processes started for this run"
-		killall iperf3 2>/dev/null || true
-		sleep 1
+	local pid
+	if [[ -z "${IPERF_SERVER_PIDS:-}" ]]; then
+		return 0
 	fi
+	log "stopping iperf3 servers we started:$IPERF_SERVER_PIDS"
+	for pid in $IPERF_SERVER_PIDS; do
+		kill "$pid" 2>/dev/null || true
+	done
+	IPERF_SERVER_PIDS=
+	sleep 1
 }
 
 # Return 0 if RX packet counters advance within ~wait seconds
@@ -191,10 +256,10 @@ inbound_rx_flowing() {
 	[[ "$b" -gt "$a" ]]
 }
 
-# Interactive: print lp7 commands, wait for Enter, verify inbound RX.
+# Interactive: print lp7 commands, wait for "yes", verify inbound RX.
 # NONINTERACTIVE=1 skips prompts (still requires traffic already running).
 prompt_start_inbound_iperf() {
-	local dut_ip tries=0
+	local dut_ip tries=0 ans=
 
 	dut_ip=${DUT_IP:-}
 	if [[ -z "$dut_ip" ]]; then
@@ -205,9 +270,12 @@ prompt_start_inbound_iperf() {
 
 	start_iperf_servers
 
-	cat <<EOF
+	# Force visibility even if someone scrolls past quiet-phase noise
+	cat >/dev/tty <<EOF
 
-========== HEAVY PHASE: inbound iperf (lp7 → DUT) ==========
+**********************************************************************
+*  STOP — start inbound iperf on lp7 ($PEER) before heavy tests     *
+**********************************************************************
 On PEER ($PEER), run:
 
   export DUT_IP=$dut_ip
@@ -215,15 +283,21 @@ On PEER ($PEER), run:
     iperf3 -c \$DUT_IP -t 600 -P 4 -p \$p &
   done
 
-Then return here.
-============================================================
+DUT is listening as $dut_ip on ports: $IPERF_PORTS
+**********************************************************************
 
 EOF
 
 	if [[ "${NONINTERACTIVE:-0}" = 1 ]]; then
 		log "NONINTERACTIVE=1 — checking for existing inbound RX (no prompt)"
 	else
-		read -r -p "Press Enter when iperf clients are running on $PEER... "
+		while true; do
+			tty_read "Type 'yes' when lp7 iperf clients are running: " ans
+			case "$ans" in
+				yes|YES|y|Y) break ;;
+				*) printf 'Please type yes (or Ctrl-C to abort).\n' >/dev/tty ;;
+			esac
+		done
 	fi
 
 	while true; do
@@ -236,7 +310,7 @@ EOF
 		if [[ "${NONINTERACTIVE:-0}" = 1 ]]; then
 			die "inbound RX not detected (start lp7 clients first, or unset NONINTERACTIVE)"
 		fi
-		read -r -p "[R]etry check, [A]bort heavy phase, [C]ontinue anyway? " ans
+		tty_read "[R]etry check, [A]bort heavy phase, [C]ontinue anyway? " ans
 		case "${ans:-R}" in
 			A|a) die "aborted: inbound iperf not confirmed" ;;
 			C|c) log "WARN: continuing without confirmed inbound RX"; return 0 ;;

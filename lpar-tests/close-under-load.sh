@@ -31,14 +31,14 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ "$IPERF" = 1 ]]; then
-	if command -v iperf3 >/dev/null; then
-		log "starting iperf3 -c $PEER -t 3600 -P $IPERF_PARALLEL (background)"
-		iperf3 -c "$PEER" -t 3600 -P "$IPERF_PARALLEL" \
+	if have_iperf3; then
+		log "starting $IPERF3 -c $PEER -t 3600 -P $IPERF_PARALLEL (background)"
+		"$IPERF3" -c "$PEER" -t 3600 -P "$IPERF_PARALLEL" \
 			>"$LOGDIR/iperf-client.log" 2>&1 &
 		iperf_pid=$!
 		sleep 2
 	else
-		log "iperf3 not found; using ping -f only"
+		log "iperf3 not found; using ping -f only (PATH=$PATH)"
 		IPERF=0
 	fi
 fi

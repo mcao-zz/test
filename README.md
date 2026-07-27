@@ -209,16 +209,18 @@ Prefer **new automated cases in `lpar-tests/`**. Keep root scripts for bring-up 
 cd lpar-tests
 # sudo clears exported env — pass IFACE/PEER on the command line:
 sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
-# Flow: quiet → prompt to start lp7 iperf clients → verify RX → heavy → cleanup
+# Flow: quiet → type 'yes' after starting lp7 iperf → verify RX → heavy → cleanup
+# If iperf3 lives under /usr/local/bin and sudo still can't find it:
+#   sudo IFACE=env9 PEER=192.168.100.2 IPERF3=$(command -v iperf3) ./run-all.sh
 ```
 
 `run-all.sh` phases:
 
-1. **Quiet** — lab-smoke, smoke, t12, t8, t19, t16 (+ optional SQ close / -L)
-2. **Iperf gate** — starts `iperf3 -s` on DUT (or reuses listeners), prints lp7
-   client commands, waits for Enter, checks `ethtool -S` RX counters increase
-3. **Heavy** — t14-rx-cycle, close-under-load RX=8, parallel-stress
-4. **Cleanup** — stop DUT iperf only if this run started them; final ping
+1. **Quiet** — lab-smoke, smoke, t12, t8, t19, t16 (+ SQ close / -L with `IPERF=0`)
+2. **Iperf gate** — starts `iperf3 -s` on DUT, prints lp7 client commands on
+   `/dev/tty`, waits until you type `yes`, checks `ethtool -S` RX counters rise
+3. **Heavy** — t14-rx-cycle, close-under-load RX=8, parallel-stress (under inbound)
+4. **Cleanup** — stop only iperf servers this run started; final ping
 
 ```bash
 sudo IFACE=env9 PEER=192.168.100.2 SKIP_HEAVY=1 ./run-all.sh

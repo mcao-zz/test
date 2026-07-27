@@ -50,8 +50,9 @@ if [[ "${SKIP_QUIET:-0}" != 1 ]]; then
 	[[ "${SKIP_STASH:-0}" = 1 ]] || run t8-stash "$DIR/t8-down-stash.sh"
 	[[ "${SKIP_CHANNELS:-0}" = 1 ]] || run t19-channels "$DIR/t19-set-channels.sh"
 	[[ "${SKIP_HCALL:-0}" = 1 ]] || run t16-hcall "$DIR/t16-hcall-deltas.sh"
-	# Optional quiet extras
-	[[ "${SKIP_CLOSE_SQ:-0}" = 1 ]] || run close-sq env RX=1 ROUNDS=10 "$DIR/close-under-load.sh"
+	# Quiet extras: no auto-outbound iperf (that hid the lp7 inbound gate)
+	[[ "${SKIP_CLOSE_SQ:-0}" = 1 ]] || \
+		run close-sq env RX=1 ROUNDS=10 IPERF=0 "$DIR/close-under-load.sh"
 	[[ "${SKIP_L_CYCLE:-0}" = 1 ]] || run L-cycle env LOOPS=2 IPERF=0 "$DIR/ethtool-L-cycle.sh"
 	ok "quiet phase complete"
 else
@@ -90,7 +91,6 @@ fi
 # ------------------------------------------------------------------
 log "========== PHASE 4: CLEANUP =========="
 stop_iperf_servers
-IPERF_STARTED_BY_US=0
 ping_ok
 check_no_lockup
 

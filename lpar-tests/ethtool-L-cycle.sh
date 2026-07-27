@@ -22,8 +22,8 @@ trap cleanup EXIT
 
 if [[ "$IPERF" = 1 ]]; then
 	need_peer
-	command -v iperf3 >/dev/null || die "iperf3 required for IPERF=1"
-	iperf3 -c "$PEER" -t 3600 -P "$IPERF_PARALLEL" \
+	need_iperf3
+	"$IPERF3" -c "$PEER" -t 3600 -P "$IPERF_PARALLEL" \
 		>"$LOGDIR/iperf-L-cycle.log" 2>&1 &
 	iperf_pid=$!
 	sleep 2

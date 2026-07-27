@@ -48,8 +48,8 @@ pids+=($!)
 pids+=($!)
 
 # Worker 3: traffic
-if [[ "$IPERF" = 1 ]] && command -v iperf3 >/dev/null; then
-	iperf3 -c "$PEER" -t "$DURATION" -P "$IPERF_PARALLEL" \
+if [[ "$IPERF" = 1 ]] && have_iperf3; then
+	"$IPERF3" -c "$PEER" -t "$DURATION" -P "$IPERF_PARALLEL" \
 		>"$LOGDIR/iperf-parallel.log" 2>&1 &
 	pids+=($!)
 else
