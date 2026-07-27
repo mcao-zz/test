@@ -208,14 +208,32 @@ Prefer **new automated cases in `lpar-tests/`**. Keep root scripts for bring-up 
 ```bash
 export IFACE=env9 PEER=192.168.100.2
 cd lpar-tests
-sudo ./run-all.sh                    # full ordered suite
-sudo ./smoke.sh                      # T1+T3
-sudo ./t12-stats-debugfs.sh          # P10/P11 names + debugfs
-sudo ./t8-down-stash.sh              # P13 stash
-sudo ./t19-set-channels.sh           # P13 set_channels
-sudo ./t16-hcall-deltas.sh           # v4 hcall_* names
-sudo ./t14-rx-cycle.sh               # wraps ../rx_queue_size.sh
-sudo LAB_FULL=1 ./lab-smoke.sh       # verify + test-veth-mq.sh
+sudo ./run-all.sh
+# Flow: quiet → prompt to start lp7 iperf clients → verify RX → heavy → cleanup
 ```
 
-Skip steps: `SKIP_PARALLEL=1 SKIP_L_IPERF=1 sudo ./run-all.sh`
+`run-all.sh` phases:
+
+1. **Quiet** — lab-smoke, smoke, t12, t8, t19, t16 (+ optional SQ close / -L)
+2. **Iperf gate** — starts `iperf3 -s` on DUT, prints lp7 client commands,
+   waits for Enter, checks `ethtool -S` RX counters increase
+3. **Heavy** — t14-rx-cycle, close-under-load RX=8, parallel-stress
+4. **Cleanup** — stop DUT iperf servers; final ping
+
+```bash
+SKIP_HEAVY=1 sudo ./run-all.sh          # quiet only
+SKIP_QUIET=1 sudo ./run-all.sh          # heavy only (still prompts)
+NONINTERACTIVE=1 sudo ./run-all.sh      # no prompt; traffic must already flow
+SKIP_PARALLEL=1 SKIP_L_IPERF=1 sudo ./run-all.sh
+```
+
+Piecemeal:
+
+```bash
+sudo ./smoke.sh
+sudo ./t12-stats-debugfs.sh
+sudo ./t8-down-stash.sh
+sudo ./t19-set-channels.sh
+sudo ./t16-hcall-deltas.sh
+sudo LAB_FULL=1 ./lab-smoke.sh
+```

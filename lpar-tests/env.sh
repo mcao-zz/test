@@ -141,3 +141,106 @@ check_no_oops() {
 	fi
 	rm -f "$f"
 }
+
+: "${IPERF_PORTS:=5201 5202 5203 5204 5205 5206 5207 5208 5209 5210 5211 5212 5213 5214 5215 5216}"
+: "${IPERF_STARTED_BY_US:=0}"
+
+sum_rx_packets() {
+	ethtool -S "$IFACE" 2>/dev/null | awk '
+		/^[[:space:]]*rx[0-9]+_packets:/ { s += $2 }
+		END { print s+0 }
+	'
+}
+
+# Start iperf3 -s on DUT (RX sink). Records IPERF_STARTED_BY_US=1.
+start_iperf_servers() {
+	local p n=0
+	command -v iperf3 >/dev/null || die "iperf3 not installed on DUT"
+	for p in $IPERF_PORTS; do
+		if ss -ltn 2>/dev/null | grep -q ":${p} "; then
+			log "iperf3 already listening on :$p"
+		else
+			iperf3 -s -p "$p" -D || die "failed to start iperf3 -s -p $p"
+			n=$((n + 1))
+		fi
+	done
+	IPERF_STARTED_BY_US=1
+	sleep 1
+	n=$(ss -ltnp 2>/dev/null | grep -c iperf3 || echo 0)
+	[[ "$n" -ge 1 ]] || die "no iperf3 listeners after start"
+	ok "iperf3 servers: $n listener(s) on DUT"
+	ss -ltnp 2>/dev/null | grep iperf3 | head -5 | while read -r line; do log "  $line"; done
+}
+
+stop_iperf_servers() {
+	if [[ "${IPERF_STARTED_BY_US:-0}" = 1 ]]; then
+		log "stopping iperf3 processes started for this run"
+		killall iperf3 2>/dev/null || true
+		sleep 1
+	fi
+}
+
+# Return 0 if RX packet counters advance within ~wait seconds
+inbound_rx_flowing() {
+	local wait=${1:-5}
+	local a b
+	a=$(sum_rx_packets)
+	sleep "$wait"
+	b=$(sum_rx_packets)
+	log "RX packets: $a → $b (Δ=$((b - a)) over ${wait}s)"
+	[[ "$b" -gt "$a" ]]
+}
+
+# Interactive: print lp7 commands, wait for Enter, verify inbound RX.
+# NONINTERACTIVE=1 skips prompts (still requires traffic already running).
+prompt_start_inbound_iperf() {
+	local dut_ip tries=0
+
+	dut_ip=${DUT_IP:-}
+	if [[ -z "$dut_ip" ]]; then
+		dut_ip=$(ip -4 -o addr show dev "$IFACE" 2>/dev/null \
+			| awk '{print $4}' | cut -d/ -f1 | head -1)
+	fi
+	[[ -n "$dut_ip" ]] || die "set DUT_IP= (this LPAR address on $IFACE)"
+
+	start_iperf_servers
+
+	cat <<EOF
+
+========== HEAVY PHASE: inbound iperf (lp7 → DUT) ==========
+On PEER ($PEER), run:
+
+  export DUT_IP=$dut_ip
+  for p in $IPERF_PORTS; do
+    iperf3 -c \$DUT_IP -t 600 -P 4 -p \$p &
+  done
+
+Then return here.
+============================================================
+
+EOF
+
+	if [[ "${NONINTERACTIVE:-0}" = 1 ]]; then
+		log "NONINTERACTIVE=1 — checking for existing inbound RX (no prompt)"
+	else
+		read -r -p "Press Enter when iperf clients are running on $PEER... "
+	fi
+
+	while true; do
+		if inbound_rx_flowing 4; then
+			ok "inbound RX traffic detected on $IFACE"
+			return 0
+		fi
+		tries=$((tries + 1))
+		log "WARN: no RX packet increase (try $tries)"
+		if [[ "${NONINTERACTIVE:-0}" = 1 ]]; then
+			die "inbound RX not detected (start lp7 clients first, or unset NONINTERACTIVE)"
+		fi
+		read -r -p "[R]etry check, [A]bort heavy phase, [C]ontinue anyway? " ans
+		case "${ans:-R}" in
+			A|a) die "aborted: inbound iperf not confirmed" ;;
+			C|c) log "WARN: continuing without confirmed inbound RX"; return 0 ;;
+			*) ;;
+		esac
+	done
+}
