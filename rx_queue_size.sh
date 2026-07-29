@@ -2,7 +2,9 @@
 # rx_queue_size.sh — cycle RX queue counts via ethtool -L with post-resize checks
 #
 # Default pattern (max from ethtool -l, capped at 16):
-#   baseline → max → 1 → 2 … max → (max-1) … 1
+#   RX_CYCLE=full (default standalone): baseline → max → 1 → 2…max → (max-1)…1
+#   RX_CYCLE=quick (run-all default):   max → 1 → mid → max → 1
+#     covers scale-down, scale-up, mid geometry without every integer step
 #
 # After each successful -L, validates:
 #   - ethtool -l RX count
@@ -23,6 +25,8 @@
 #   sudo ./rx_queue_size.sh [iface] [delay_seconds]
 #   sudo PEER=192.168.100.2 ./rx_queue_size.sh env9 2
 #   sudo PEER=… UNDER_RX=1 MIN_RX_DELTA=10000 ./rx_queue_size.sh env9 2
+#   sudo RX_CYCLE=quick UNDER_RX=1 ./rx_queue_size.sh env9 1
+#   sudo RX_CYCLE=full  …              # exhaustive (every integer)
 #
 # Logs: /tmp/ibmveth-rx-cycle-<iface>-<timestamp>/
 
@@ -32,11 +36,14 @@ IFACE="${1:-env9}"
 DELAY="${2:-2}"
 PEER="${PEER:-}"
 UNDER_RX="${UNDER_RX:-0}"
+RX_CYCLE="${RX_CYCLE:-full}"
 RX_SAMPLE_SECS="${RX_SAMPLE_SECS:-5}"
 MIN_RX_DELTA="${MIN_RX_DELTA:-10000}"
 MIN_ACTIVE_RX_QUEUES="${MIN_ACTIVE_RX_QUEUES:-2}"
 MIN_NEW_QUEUE_DELTA="${MIN_NEW_QUEUE_DELTA:-1}"
 MAX_ERR_DELTA="${MAX_ERR_DELTA:-0}"
+# Scale-up extra sample seconds (full cycle default 5; quick uses 2).
+RX_SCALEUP_EXTRA="${RX_SCALEUP_EXTRA:-}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -184,7 +191,9 @@ check_rx_under_load() {
 
 	# Scale-up: give the hypervisor hasher a longer window to hit new queues
 	if [ "$expect" -gt "$prev" ]; then
-		wait=$((RX_SAMPLE_SECS + 5))
+		local extra=${RX_SCALEUP_EXTRA:-5}
+		[ "$RX_CYCLE" = "quick" ] && extra=${RX_SCALEUP_EXTRA:-2}
+		wait=$((RX_SAMPLE_SECS + extra))
 	fi
 
 	before_f="$stepdir/rx-before-sample.txt"
@@ -342,10 +351,12 @@ validate_after_resize() {
 
 	# --- optional peer ping ---
 	if [ -n "$PEER" ]; then
-		if ping -c 3 -W 2 "$PEER" > "$stepdir/ping.txt" 2>&1; then
-			ok "ping -c 3 $PEER ok"
+		local ping_n=3
+		[ "$RX_CYCLE" = "quick" ] && ping_n=1
+		if ping -c "$ping_n" -W 2 "$PEER" > "$stepdir/ping.txt" 2>&1; then
+			ok "ping -c $ping_n $PEER ok"
 		else
-			bad "ping -c 3 $PEER failed (see $stepdir/ping.txt)"
+			bad "ping -c $ping_n $PEER failed (see $stepdir/ping.txt)"
 		fi
 	fi
 
@@ -390,11 +401,19 @@ CUR=$(get_rx_current)
 dmesg_mark
 snap_errors
 
+# Mid point for quick cycle (prefer 4 when max>=4 so MQ spread still applies).
+MID_RX=$((MAX_RX / 2))
+[ "$MID_RX" -lt 1 ] && MID_RX=1
+if [ "$MAX_RX" -ge 4 ] && [ "$MID_RX" -lt 4 ]; then
+	MID_RX=4
+fi
+[ "$MID_RX" -ge "$MAX_RX" ] && MID_RX=$((MAX_RX > 1 ? MAX_RX - 1 : 1))
+
 echo "=============================================="
 echo "  ibmveth RX Queue Cycle Test"
 echo "  Interface: ${IFACE}"
 echo "  Current RX: ${CUR:-?}   Max used: ${MAX_RX}"
-echo "  Delay: ${DELAY}s"
+echo "  RX_CYCLE: ${RX_CYCLE}   Delay: ${DELAY}s"
 echo "  Peer ping: ${PEER:-disabled (set PEER=ip)}"
 echo "  UNDER_RX: ${UNDER_RX}  (bulk Δ>=${MIN_RX_DELTA}/${RX_SAMPLE_SECS}s)"
 echo "  Logs: $LOGDIR"
@@ -405,32 +424,69 @@ ethtool -l "$IFACE" | tee "$LOGDIR/ethtool-l-initial.txt"
 echo ""
 ethtool -S "$IFACE" > "$LOGDIR/ethtool-S-initial.txt" 2>/dev/null || true
 
-echo "========================================="
-echo "  PHASE 1: → RX ${MAX_RX}"
-echo "========================================="
-set_rx "$MAX_RX" "baseline" || true
-
-echo "========================================="
-echo "  PHASE 2: ${MAX_RX} → 1"
-echo "========================================="
-set_rx 1 "scale down to 1" || true
-
-echo "========================================="
-echo "  PHASE 3: Forward 2 → … → ${MAX_RX}"
-echo "========================================="
-for q in $(seq 2 "$MAX_RX"); do
-	set_rx "$q" "forward $((q - 1)) → ${q}" || true
-	[ "$FAIL" -ne 0 ] && break
-done
-
-if [ "$FAIL" -eq 0 ]; then
+if [ "$RX_CYCLE" = "quick" ]; then
+	# Sparse: max → 1 → mid → max → 1  (~5 steps vs ~2*max)
 	echo "========================================="
-	echo "  PHASE 4: Reverse $((MAX_RX - 1)) → … → 1"
+	echo "  QUICK: → RX ${MAX_RX}"
 	echo "========================================="
-	for q in $(seq $((MAX_RX - 1)) -1 1); do
-		set_rx "$q" "reverse $((q + 1)) → ${q}" || true
+	set_rx "$MAX_RX" "quick baseline max" || true
+
+	if [ "$FAIL" -eq 0 ]; then
+		echo "========================================="
+		echo "  QUICK: ${MAX_RX} → 1"
+		echo "========================================="
+		set_rx 1 "quick scale down to 1" || true
+	fi
+
+	if [ "$FAIL" -eq 0 ] && [ "$MID_RX" -gt 1 ] && [ "$MID_RX" -lt "$MAX_RX" ]; then
+		echo "========================================="
+		echo "  QUICK: 1 → ${MID_RX}"
+		echo "========================================="
+		set_rx "$MID_RX" "quick scale up to mid" || true
+	fi
+
+	if [ "$FAIL" -eq 0 ] && [ "$MAX_RX" -gt 1 ]; then
+		echo "========================================="
+		echo "  QUICK: → RX ${MAX_RX}"
+		echo "========================================="
+		set_rx "$MAX_RX" "quick scale up to max" || true
+	fi
+
+	if [ "$FAIL" -eq 0 ]; then
+		echo "========================================="
+		echo "  QUICK: ${MAX_RX} → 1"
+		echo "========================================="
+		set_rx 1 "quick final scale down" || true
+	fi
+else
+	# Full exhaustive cycle (every integer up and down).
+	echo "========================================="
+	echo "  PHASE 1: → RX ${MAX_RX}"
+	echo "========================================="
+	set_rx "$MAX_RX" "baseline" || true
+
+	echo "========================================="
+	echo "  PHASE 2: ${MAX_RX} → 1"
+	echo "========================================="
+	set_rx 1 "scale down to 1" || true
+
+	echo "========================================="
+	echo "  PHASE 3: Forward 2 → … → ${MAX_RX}"
+	echo "========================================="
+	for q in $(seq 2 "$MAX_RX"); do
+		set_rx "$q" "forward $((q - 1)) → ${q}" || true
 		[ "$FAIL" -ne 0 ] && break
 	done
+
+	if [ "$FAIL" -eq 0 ]; then
+		echo "========================================="
+		echo "  PHASE 4: Reverse $((MAX_RX - 1)) → … → 1"
+		echo "========================================="
+		for q in $(seq $((MAX_RX - 1)) -1 1); do
+			set_rx "$q" "reverse $((q + 1)) → ${q}" || true
+			[ "$FAIL" -ne 0 ] && break
+		done
+	fi
 fi
 
 echo "=============================================="

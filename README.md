@@ -229,15 +229,14 @@ sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
 0. **Dyndbg load** (`DYNDBG=1`, default) — reload with `dyndbg=+p`
    (`modprobe`, or `insmod` when `IBMVETH_KO=` points at a `.ko` / build dir)
    before any tests; saves/restores `$IFACE` IPv4
-1. **Quiet** — lab-smoke (verify `-v`; skip second `-D` reload when phase 0
-   ran), smoke, t12, **t10 stats-lifetime**, **t11 debugfs geometry**, t8,
-   **t17 down-no-live-irqs**, t19, **t21 RSS hfunc**, t16, **t20 reload-MQ**
-   (reload again with dyndbg), SQ close / -L with `IPERF=0`
-2. **Iperf + MQ RX proof** — start `iperf3 -s`, wait for `yes`, require bulk
-   `rx*_packets` Δ ≥ `MIN_RX_DELTA` and ≥ `MIN_ACTIVE_RX_QUEUES` queues active
-   at `MQ_PROOF_RX` (rejects ping-sized noise)
-3. **Heavy** — T14 with `UNDER_RX=1` (per-step error Δ, bulk RX, new-queue
-   traffic on scale-up), close-mq / parallel / -L, MQ RX re-proof after each
+1. **Quiet / functional** — lab-smoke, smoke, t12, t22, t10, t11, t8, t17,
+   t19, t21, t16, t20. With `EXTERNAL_IPERF=1`, also runs t22/`t21` under RX
+   here and skips phase-1 close-sq / L-cycle (heavy covers them).
+2. **Iperf + MQ RX proof** — start `iperf3 -s`, wait for `yes` (or soft gate
+   under `EXTERNAL_IPERF`), require bulk + MQ spread
+3. **Heavy** — T14 `UNDER_RX` (`RX_CYCLE=quick` default), close-mq / parallel
+   / L-under-rx, MQ re-proof after churn. With `EXTERNAL_IPERF=1`, skips
+   mq-rx-pre / t22-rx / t21-rx (already done in phase 1 + gate).
 4. **Cleanup** — stop only iperf servers this run started; final ping
 
 ```bash
@@ -265,6 +264,8 @@ sudo IFACE=env9 PEER=192.168.100.2 ./smoke.sh
 sudo IFACE=env9 PEER=192.168.100.2 ./t10-stats-lifetime.sh
 sudo IFACE=env9 PEER=192.168.100.2 ./t11-debugfs-geometry.sh
 sudo IFACE=env9 PEER=192.168.100.2 ./t12-stats-debugfs.sh
+sudo IFACE=env9 PEER=192.168.100.2 ./t22-stats-coherence.sh
+sudo IFACE=env9 UNDER_RX=1 ./t22-stats-coherence.sh
 sudo IFACE=env9 PEER=192.168.100.2 ./t8-down-stash.sh
 sudo IFACE=env9 PEER=192.168.100.2 ./t17-down-no-live-irqs.sh
 sudo IFACE=env9 PEER=192.168.100.2 ./t19-set-channels.sh

@@ -63,6 +63,7 @@ Quick map: risk → test
 | Poll hang / bad correlator (P14)           | T10          |
 | NAPI/close during -L / ifdown              | T11          |
 | Stats / debugfs / hcall_* (P10/P11)        | T12, T16     |
+| Stats coherence (ethtool vs ip/proc/sar)   | T22          |
 | Legacy firmware (no MQ bit)                | T13          |
 | Down-state RX stash (P13)                  | T8, T17      |
 | IRQ geometry after resize/close/open       | T14, T18     |
@@ -150,6 +151,15 @@ T12 — stats / debugfs smoke
   find /sys/kernel/debug -name buffer_pools 2>/dev/null | head
   Pass: readable; no oops
 
+T22 — stats coherence (ethtool vs ndo / ip / proc; optional sar)
+  sum(ethtool -S rxN_packets) ≈ ip -s link RX packets ≈ /proc/net/dev
+  sum(txN_packets) ≈ TX when txN rows exist; sum(rxN_invalid_buffers)
+    ≈ rx_invalid_buffer when present
+  Counters monotonic over STATS_SAMPLE_SECS (default RX_SAMPLE_SECS)
+  UNDER_RX=1: Δ ≥ MIN_RX_DELTA and ethtool Δ ≈ ip Δ; sar -n DEV if installed
+  Script: lpar-tests/t22-stats-coherence.sh (run-all: quiet + heavy UNDER_RX)
+  Pass: within STATS_TOLERANCE / STATS_TOL_PCT; no backwards counters
+
 T13 — legacy / non-MQ firmware
   T1 T2 T6; ethtool -L rx 2 → -EOPNOTSUPP
   Pass: SQ only; reject cleanly
@@ -166,8 +176,12 @@ T14 — Resize geometry triple-check (automated by rx_queue_size.sh)
     sysfs queues/rx-* == N (if present)
     dmesg delta contains "Successfully resized to N RX queues"
     no Oops/BUG; error counters not exploding
+  RX_CYCLE=quick (run-all / t14 default): max→1→mid→max→1 (~5 steps)
+  RX_CYCLE=full (standalone default): every integer up and down
   Pass: ./rx_queue_size.sh succeeds end-to-end
-  Script: sudo PEER=$PEER ./rx_queue_size.sh $IFACE 2
+  Script: sudo PEER=$PEER RX_CYCLE=quick ./rx_queue_size.sh $IFACE 1
+          sudo PEER=$PEER UNDER_RX=1 ./lpar-tests/t14-rx-cycle.sh
+          sudo … RX_CYCLE=full …   # exhaustive (slow under load)
 
 T15 — Resize under multi-flow RX (cover-letter style)
   On DUT: iperf3 -s -p 5201..5216 -D
@@ -241,7 +255,7 @@ T21 — RSS hash algorithm (P15)
 --------------------------------------------------------------------
 Suggested order
 --------------------------------------------------------------------
-1. Smoke: T1, T3, T12 (stat names), ping
+1. Smoke: T1, T3, T12 (stat names), T22 (coherence), ping
 2. Automated resize: T14 (rx_queue_size.sh)
 3. Core: T5, T7, T9 / T15
 4. v4 stash / IRQ: T8, T17, T18, T16
@@ -276,6 +290,7 @@ Auto harness (preferred for new tests):
   lpar-tests/t10-stats-lifetime.sh — P10 stats across ifdown/up
   lpar-tests/t11-debugfs-geometry.sh — P11 debugfs vs RX geometry
   lpar-tests/t12-stats-debugfs.sh — D11/T12 ethtool names + debugfs
+  lpar-tests/t22-stats-coherence.sh — T22 ethtool vs ip/proc (+sar)
   lpar-tests/t8-down-stash.sh    — T8 P13 stash
   lpar-tests/t17-down-no-live-irqs.sh — T17 no live IRQs while down
   lpar-tests/t14-rx-cycle.sh     — T14 wraps ../rx_queue_size.sh

@@ -2,11 +2,11 @@
 # Ordered suite matching the preferred lab flow:
 #
 #   0) Optional: reload ibmveth with dyndbg=+p (DYNDBG=1, default)
-#   1) Quiet: smoke, t8, t12, t19, t21, t16
+#   1) Quiet: smoke, t8, t12, t22, t19, t21, t16
 #   2) Interactive: start DUT iperf servers, prompt for lp7 clients,
 #      prove bulk inbound + MQ RX spread under load
-#   3) Heavy: re-prove MQ RX, t14, re-prove, close/parallel/-L with
-#      MQ RX proofs between stages (lp7 clients must stay up)
+#   3) Heavy: re-prove MQ RX, t22 under RX, t14, re-prove, close/parallel/-L
+#      with MQ RX proofs between stages (lp7 clients must stay up)
 #   4) Final MQ RX proof + ping
 #
 # Usage (put overrides ON the sudo line — sudo clears prior exports):
@@ -22,6 +22,9 @@
 #   SKIP_PARALLEL=1 ...       # skip hang-hunt stress
 #   SKIP_RSS=1 ...            # skip quiet T21 RSS hfunc
 #   SKIP_RSS_RX=1 ...         # skip heavy T21 under-traffic hash switch
+#   EXTERNAL_IPERF=1 ...      # lab owns iperf; de-dupe phase1↔heavy under-RX
+#   RX_CYCLE=quick ...        # default: short T14 (max→1→mid→max→1)
+#   RX_CYCLE=full ...         # exhaustive T14 every integer (slow under load)
 #   LAB_FULL=1 ...            # also run ../test-veth-mq.sh from lab-smoke
 #   SIMPLE_IPERF=1 ...        # one-port long iperf; soft Δ; no multi-queue spread demand
 #   CHECK_HEALTH=1 ...        # default ON: after each test + end summary (mem/softnet/IRQ/dmesg)
@@ -43,7 +46,7 @@ while [[ $# -gt 0 ]]; do
 			sed -n '2,30p' "$0" | sed 's/^# \?//'
 			exit 0
 			;;
-		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SIMPLE_IPERF=*|SKIP_*=*|NONINTERACTIVE=*|MIN_*=*|MQ_*=*|IPERF_*=*|LAB_FULL=*|DUT_IP=*|RESTART_IPERF=*|CHECK_HEALTH=*|CHECK_MEM=*|MEM_GROW_MB=*|MEM_FAIL=*|HEALTH_FAIL=*|HEALTH_UNLOAD=*)
+		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SIMPLE_IPERF=*|SKIP_*=*|NONINTERACTIVE=*|MIN_*=*|MQ_*=*|IPERF_*=*|LAB_FULL=*|DUT_IP=*|RESTART_IPERF=*|CHECK_HEALTH=*|CHECK_MEM=*|MEM_GROW_MB=*|MEM_FAIL=*|HEALTH_FAIL=*|HEALTH_UNLOAD=*|RX_CYCLE=*|DELAY=*)
 			export "${1?}"
 			shift
 			;;
@@ -74,6 +77,9 @@ _HAD_CLI_MIN_ACTIVE_RX_QUEUES=${MIN_ACTIVE_RX_QUEUES+1}
 : "${EXTERNAL_IPERF:=0}"
 : "${CHECK_HEALTH:=1}"
 : "${CHECK_MEM:=0}"
+: "${RX_CYCLE:=quick}"
+export RX_CYCLE
+log "RX_CYCLE=$RX_CYCLE (T14; set RX_CYCLE=full for exhaustive resize)"
 # CHECK_MEM is an alias for CHECK_HEALTH; CHECK_HEALTH=0 wins if set explicitly after
 if [[ "$CHECK_MEM" = 1 ]]; then
 	CHECK_HEALTH=1
@@ -167,25 +173,40 @@ fi
 # ------------------------------------------------------------------
 if [[ "${SKIP_QUIET:-0}" != 1 ]]; then
 	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
-		log "========== PHASE 1: FUNCTIONAL (geometry/debug/reload; lab iperf left alone) =========="
+		log "========== PHASE 1: FUNCTIONAL (lab iperf already up — do under-RX here; skip heavy dupes) =========="
 	else
 		log "========== PHASE 1: QUIET (no lp7 iperf — geometry/debug/reload only) =========="
 	fi
 	[[ "${SKIP_LAB:-0}" = 1 ]] || run lab-smoke "$DIR/lab-smoke.sh"
 	[[ "${SKIP_SMOKE:-0}" = 1 ]] || run smoke "$DIR/smoke.sh"
 	[[ "${SKIP_STATS:-0}" = 1 ]] || run t12-stats "$DIR/t12-stats-debugfs.sh"
+	# EXTERNAL_IPERF: one UNDER_RX coherence pass here; skip heavy re-run.
+	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
+		[[ "${SKIP_T22:-0}" = 1 ]] || \
+			run t22-coherence env UNDER_RX=1 "$DIR/t22-stats-coherence.sh"
+	else
+		[[ "${SKIP_T22:-0}" = 1 ]] || run t22-coherence "$DIR/t22-stats-coherence.sh"
+	fi
 	[[ "${SKIP_T10:-0}" = 1 ]] || run t10-lifetime "$DIR/t10-stats-lifetime.sh"
 	[[ "${SKIP_T11:-0}" = 1 ]] || run t11-debugfs "$DIR/t11-debugfs-geometry.sh"
 	[[ "${SKIP_STASH:-0}" = 1 ]] || run t8-stash "$DIR/t8-down-stash.sh"
 	[[ "${SKIP_T17:-0}" = 1 ]] || run t17-down-irqs "$DIR/t17-down-no-live-irqs.sh"
 	[[ "${SKIP_CHANNELS:-0}" = 1 ]] || run t19-channels "$DIR/t19-set-channels.sh"
+	# Quiet get/set/reject always; under EXTERNAL_IPERF also do UNDER_RX once here.
 	[[ "${SKIP_RSS:-0}" = 1 ]] || run t21-rss "$DIR/t21-rss-hfunc.sh"
+	if [[ "${EXTERNAL_IPERF:-0}" = 1 && "${SKIP_RSS_RX:-0}" != 1 ]]; then
+		run t21-rss-under-rx env UNDER_RX=1 "$DIR/t21-rss-hfunc.sh"
+	fi
 	[[ "${SKIP_HCALL:-0}" = 1 ]] || run t16-hcall "$DIR/t16-hcall-deltas.sh"
 	[[ "${SKIP_T20:-0}" = 1 ]] || run t20-reload "$DIR/t20-reload-restore-mq.sh"
-	# No auto-outbound iperf here (would hide the inbound gate when harness owns iperf).
-	[[ "${SKIP_CLOSE_SQ:-0}" = 1 ]] || \
-		run close-sq env RX=1 ROUNDS=10 IPERF=0 "$DIR/close-under-load.sh"
-	[[ "${SKIP_L_CYCLE:-0}" = 1 ]] || run L-cycle env LOOPS=2 IPERF=0 "$DIR/ethtool-L-cycle.sh"
+	# close-sq / L-cycle: under EXTERNAL_IPERF, heavy close-mq + L-under-rx cover this.
+	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
+		log "EXTERNAL_IPERF=1 — skip phase-1 close-sq / L-cycle (heavy close-mq + L-under-rx)"
+	else
+		[[ "${SKIP_CLOSE_SQ:-0}" = 1 ]] || \
+			run close-sq env RX=1 ROUNDS=10 IPERF=0 "$DIR/close-under-load.sh"
+		[[ "${SKIP_L_CYCLE:-0}" = 1 ]] || run L-cycle env LOOPS=2 IPERF=0 "$DIR/ethtool-L-cycle.sh"
+	fi
 	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
 		ok "phase 1 functional complete"
 	else
@@ -213,15 +234,21 @@ if [[ "${SKIP_HEAVY:-0}" != 1 ]]; then
 	# ------------------------------------------------------------------
 	log "========== PHASE 3: HEAVY (under proven inbound MQ RX) =========="
 
-	# Explicit proof before geometry churn (gate already proved once).
-	[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
-		run mq-rx-pre "$DIR/t-mq-rx-under-load.sh" pre-heavy
+	# Gate already proved MQ; under EXTERNAL_IPERF phase 1 also did T21/T22 under RX.
+	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
+		log "EXTERNAL_IPERF=1 — skip mq-rx-pre / t22-rx / t21-rx (done in phase 1 + gate)"
+	else
+		[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
+			run mq-rx-pre "$DIR/t-mq-rx-under-load.sh" pre-heavy
 
-	# T21 under traffic: hfunc switch + error Δ + MQ spread (P15)
-	[[ "${SKIP_RSS_RX:-0}" = 1 ]] || \
-		run t21-rss-under-rx env UNDER_RX=1 "$DIR/t21-rss-hfunc.sh"
-	[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
-		run mq-rx-post-t21 "$DIR/t-mq-rx-under-load.sh" post-t21-rss
+		[[ "${SKIP_T22:-0}" = 1 ]] || \
+			run t22-coherence-rx env UNDER_RX=1 "$DIR/t22-stats-coherence.sh"
+
+		[[ "${SKIP_RSS_RX:-0}" = 1 ]] || \
+			run t21-rss-under-rx env UNDER_RX=1 "$DIR/t21-rss-hfunc.sh"
+		[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
+			run mq-rx-post-t21 "$DIR/t-mq-rx-under-load.sh" post-t21-rss
+	fi
 
 	# T14 under inbound: each -L step checks error Δ, bulk RX, new-queue traffic
 	[[ "${SKIP_T14:-0}" = 1 ]] || \
