@@ -439,76 +439,110 @@ check_no_oops() {
 	rm -f "$f"
 }
 
-# Optional memory / leak hygiene (CHECK_MEM=1).
-# Snapshots MemAvailable + Slab + SUnreclaim; scans dmesg for kmemleak.
-# Default: warn on growth. MEM_FAIL=1 turns growth into die.
+# Optional driver-update health (CHECK_HEALTH=1). Includes memory.
+# After each test: MemAvailable/Slab Δ, dmesg kmemleak/WARN, softnet drops,
+# IRQ count vs RX geometry. HEALTH_FAIL=1 makes growth/WARN fatal (default warn).
+# CHECK_MEM=1 is an alias for CHECK_HEALTH=1.
+: "${CHECK_HEALTH:=0}"
 : "${CHECK_MEM:=0}"
 : "${MEM_GROW_MB:=64}"            # MemAvailable drop / Slab rise warn threshold (MB)
-: "${MEM_FAIL:=0}"
-MEM_LOG="${MEM_LOG:-$LOGDIR/memory-check.log}"
+: "${HEALTH_FAIL:=0}"
+: "${MEM_FAIL:=0}"                # alias → HEALTH_FAIL
+HEALTH_LOG="${HEALTH_LOG:-$LOGDIR/health-check.log}"
 _MEM_PREV_AVAIL=
 _MEM_PREV_SLAB=
 _MEM_BASE_AVAIL=
 _MEM_BASE_SLAB=
+_SOFTNET_BASE=
+_HEALTH_IRQ_BASE=
+
+_health_enabled() {
+	[[ "${CHECK_HEALTH:-0}" = 1 || "${CHECK_MEM:-0}" = 1 ]]
+}
+
+_health_fail_mode() {
+	[[ "${HEALTH_FAIL:-0}" = 1 || "${MEM_FAIL:-0}" = 1 ]]
+}
 
 _mem_read_kb() {
-	# $1 = MemAvailable|Slab|SUnreclaim — print kB
 	awk -v k="$1:" '$1 == k { print $2; exit }' /proc/meminfo
 }
 
 _mem_slab_approx_kb() {
-	# Rough kmalloc*/dma-* active bytes from slabinfo (needs root).
 	[[ -r /proc/slabinfo ]] || { echo 0; return 0; }
 	awk '
 		/^#/ { next }
 		$1 ~ /^(kmalloc|dma-kmalloc)/ {
-			# cols: name active_objs num_objs objsize ...
 			sum += $3 * $4
 		}
 		END { printf "%d\n", sum / 1024 }
 	' /proc/slabinfo 2>/dev/null || echo 0
 }
 
+_softnet_totals() {
+	# sum dropped + time_squeeze across CPUs (hex cols 2 and 3)
+	[[ -r /proc/net/softnet_stat ]] || { echo "0 0"; return 0; }
+	awk '{
+		d += ("0x"$2)+0
+		t += ("0x"$3)+0
+	}
+	END { print d+0, t+0 }' /proc/net/softnet_stat 2>/dev/null || echo "0 0"
+}
+
 mem_snapshot() {
 	local label=$1
-	local avail slab sunr kmal
+	local avail slab sunr kmal soft
 	avail=$(_mem_read_kb MemAvailable)
 	slab=$(_mem_read_kb Slab)
 	sunr=$(_mem_read_kb SUnreclaim)
 	kmal=$(_mem_slab_approx_kb)
+	soft=$(_softnet_totals)
 	avail=${avail:-0}; slab=${slab:-0}; sunr=${sunr:-0}; kmal=${kmal:-0}
 	mkdir -p "$LOGDIR"
 	{
-		echo "=== mem $label $(date '+%F %T') ==="
+		echo "=== health $label $(date '+%F %T') ==="
 		echo "MemAvailable_kB=$avail Slab_kB=$slab SUnreclaim_kB=$sunr kmallocish_kB=$kmal"
+		echo "softnet_dropped_squeeze=$soft"
+		echo "iface_irqs=$(count_iface_irqs) rx_queues=$(current_rx)"
 		grep -E '^(MemTotal|MemFree|MemAvailable|Slab|SUnreclaim|SReclaimable):' /proc/meminfo
 		echo
-	} >>"$MEM_LOG"
-	printf '%s %s %s %s\n' "$avail" "$slab" "$sunr" "$kmal"
+	} >>"$HEALTH_LOG"
+	printf '%s %s %s %s %s\n' "$avail" "$slab" "$sunr" "$kmal" "${soft// /_}"
 }
 
-mem_baseline_init() {
-	local v
-	[[ "${CHECK_MEM:-0}" = 1 ]] || return 0
-	MEM_LOG="$LOGDIR/memory-check.log"
-	: >"$MEM_LOG"
+# Init baselines for CHECK_HEALTH (memory + softnet + IRQs).
+health_baseline_init() {
+	local v soft irqs
+
+	_health_enabled || return 0
+	CHECK_HEALTH=1
+	export CHECK_HEALTH
+	HEALTH_LOG="$LOGDIR/health-check.log"
+	: >"$HEALTH_LOG"
 	save_dmesg_mark
 	v=$(mem_snapshot "baseline")
 	_MEM_BASE_AVAIL=$(awk '{print $1}' <<<"$v")
 	_MEM_BASE_SLAB=$(awk '{print $2}' <<<"$v")
 	_MEM_PREV_AVAIL=$_MEM_BASE_AVAIL
 	_MEM_PREV_SLAB=$_MEM_BASE_SLAB
-	ok "CHECK_MEM baseline MemAvailable=$((_MEM_BASE_AVAIL / 1024))MB Slab=$((_MEM_BASE_SLAB / 1024))MB (log $MEM_LOG)"
+	_SOFTNET_BASE=$(_softnet_totals)
+	_HEALTH_IRQ_BASE=$(count_iface_irqs)
+	ok "CHECK_HEALTH baseline Avail=$((_MEM_BASE_AVAIL / 1024))MB Slab=$((_MEM_BASE_SLAB / 1024))MB softnet=$_SOFTNET_BASE irqs=$_HEALTH_IRQ_BASE (log $HEALTH_LOG)"
 }
 
-# Compare to previous snapshot (and baseline). Call after each test when CHECK_MEM=1.
-mem_check_after() {
+# Backward-compatible name.
+mem_baseline_init() { health_baseline_init; }
+
+# Full health check after a test step.
+health_check_after() {
 	local label=$1
 	local v avail slab sunr kmal
-	local d_avail d_slab d_base_avail d_base_slab leak_count=0 cur mark delta
+	local d_avail d_slab d_base_avail d_base_slab
+	local soft soft_d soft_t base_d base_t dd dt
+	local irqs rxn leak_count=0 warn_count=0 cur mark delta
 	local fail=0
 
-	[[ "${CHECK_MEM:-0}" = 1 ]] || return 0
+	_health_enabled || return 0
 
 	v=$(mem_snapshot "after:$label")
 	avail=$(awk '{print $1}' <<<"$v")
@@ -516,43 +550,120 @@ mem_check_after() {
 	sunr=$(awk '{print $3}' <<<"$v")
 	kmal=$(awk '{print $4}' <<<"$v")
 
-	d_avail=$((_MEM_PREV_AVAIL - avail))   # positive = Available dropped
-	d_slab=$((slab - _MEM_PREV_SLAB))      # positive = Slab grew
+	d_avail=$((_MEM_PREV_AVAIL - avail))
+	d_slab=$((slab - _MEM_PREV_SLAB))
 	d_base_avail=$((_MEM_BASE_AVAIL - avail))
 	d_base_slab=$((slab - _MEM_BASE_SLAB))
 
-	log "mem[$label]: Avail $((_MEM_PREV_AVAIL / 1024))→$((avail / 1024))MB (Δ=$((-d_avail / 1024))MB)  Slab $((_MEM_PREV_SLAB / 1024))→$((slab / 1024))MB (Δ=$((d_slab / 1024))MB)  vs baseline AvailΔ=$((-d_base_avail / 1024))MB SlabΔ=$((d_base_slab / 1024))MB"
+	log "health[$label]: Avail $((_MEM_PREV_AVAIL / 1024))→$((avail / 1024))MB (Δ=$((-d_avail / 1024))MB)  Slab $((_MEM_PREV_SLAB / 1024))→$((slab / 1024))MB (Δ=$((d_slab / 1024))MB)  vs base AvailΔ=$((-d_base_avail / 1024))MB SlabΔ=$((d_base_slab / 1024))MB"
 
-	# dmesg kmemleak / explicit leak strings since mark (do not advance mark — oops check owns that)
+	# --- memory growth ---
+	if [[ "$d_avail" -gt $((MEM_GROW_MB * 1024)) ]]; then
+		log "WARN: MemAvailable dropped $((d_avail / 1024))MB after $label (threshold ${MEM_GROW_MB}MB)"
+		_health_fail_mode && fail=1
+	fi
+	if [[ "$d_slab" -gt $((MEM_GROW_MB * 1024)) ]]; then
+		log "WARN: Slab grew $((d_slab / 1024))MB after $label (threshold ${MEM_GROW_MB}MB)"
+		_health_fail_mode && fail=1
+	fi
+
+	# --- softnet ---
+	soft=$(_softnet_totals)
+	soft_d=$(awk '{print $1}' <<<"$soft")
+	soft_t=$(awk '{print $2}' <<<"$soft")
+	base_d=$(awk '{print $1}' <<<"$_SOFTNET_BASE")
+	base_t=$(awk '{print $2}' <<<"$_SOFTNET_BASE")
+	dd=$((soft_d - base_d))
+	dt=$((soft_t - base_t))
+	log "health[$label]: softnet dropped Δ=$dd time_squeeze Δ=$dt (since baseline)"
+	if [[ "$dd" -gt 1000 || "$dt" -gt 1000 ]]; then
+		log "WARN: softnet pressure high after $label (droppedΔ=$dd squeezeΔ=$dt)"
+		_health_fail_mode && fail=1
+	fi
+
+	# --- IRQ vs RX geometry (when iface present) ---
+	if ip link show "$IFACE" &>/dev/null; then
+		irqs=$(count_iface_irqs)
+		rxn=$(current_rx)
+		rxn=${rxn:-0}
+		log "health[$label]: irqs=$irqs rx_queues=$rxn"
+		if [[ "$rxn" -ge 1 && "$irqs" -gt 0 && "$irqs" -ne "$rxn" ]]; then
+			# Allow minor mismatch right after resize; warn only if far off
+			if [[ "$irqs" -lt "$rxn" || "$irqs" -gt $((rxn + 2)) ]]; then
+				log "WARN: IRQ count $irqs vs RX queues $rxn after $label"
+				_health_fail_mode && fail=1
+			fi
+		fi
+	fi
+
+	# --- dmesg: kmemleak + ibmveth WARN (since mark; do not advance) ---
 	mark=$(cat "$LOGDIR/dmesg.mark" 2>/dev/null || echo 0)
 	cur=$(dmesg | wc -l)
 	delta=$((cur - mark))
 	if [[ "$delta" -gt 0 ]]; then
 		leak_count=$(dmesg | tail -n "$delta" | grep -ciE 'kmemleak|memory leak|memleak' || true)
+		warn_count=$(dmesg | tail -n "$delta" | grep -ciE 'ibmveth.*(WARN|WARNING)|WARNING:.*ibmveth|WARN_ON' || true)
 	fi
 	if [[ "${leak_count:-0}" -gt 0 ]]; then
-		log "FAIL: dmesg reports $leak_count new kmemleak/memory-leak line(s) after $label"
+		log "FAIL: dmesg $leak_count new kmemleak/memory-leak line(s) after $label"
 		dmesg | tail -n "$delta" | grep -iE 'kmemleak|memory leak|memleak' | tail -10 | \
 			while read -r line; do log "  $line"; done
 		fail=1
 	fi
-
-	if [[ "$d_avail" -gt $((MEM_GROW_MB * 1024)) ]]; then
-		log "WARN: MemAvailable dropped $((d_avail / 1024))MB after $label (threshold ${MEM_GROW_MB}MB)"
-		[[ "${MEM_FAIL:-0}" = 1 ]] && fail=1
-	fi
-	if [[ "$d_slab" -gt $((MEM_GROW_MB * 1024)) ]]; then
-		log "WARN: Slab grew $((d_slab / 1024))MB after $label (threshold ${MEM_GROW_MB}MB)"
-		[[ "${MEM_FAIL:-0}" = 1 ]] && fail=1
+	if [[ "${warn_count:-0}" -gt 0 ]]; then
+		log "WARN: dmesg $warn_count ibmveth/WARN-related line(s) after $label"
+		dmesg | tail -n "$delta" | grep -iE 'ibmveth.*(WARN|WARNING)|WARNING:.*ibmveth|WARN_ON' | tail -8 | \
+			while read -r line; do log "  $line"; done
+		_health_fail_mode && fail=1
 	fi
 
 	_MEM_PREV_AVAIL=$avail
 	_MEM_PREV_SLAB=$slab
 
 	if [[ "$fail" -eq 1 ]]; then
-		die "CHECK_MEM failed after $label (see $MEM_LOG)"
+		die "CHECK_HEALTH failed after $label (see $HEALTH_LOG)"
 	fi
-	ok "mem check after $label"
+	ok "health check after $label"
+}
+
+# Backward-compatible alias.
+mem_check_after() { health_check_after "$@"; }
+
+# End-of-suite: try a clean unload/reload probe only if IBMVETH_KO or HEALTH_UNLOAD=1.
+# Skipped by default under EXTERNAL_IPERF (would kill lab traffic).
+health_unload_probe() {
+	local saved_ip
+
+	_health_enabled || return 0
+	[[ "${HEALTH_UNLOAD:-0}" = 1 ]] || return 0
+	[[ "${EXTERNAL_IPERF:-0}" = 1 ]] && {
+		log "HEALTH_UNLOAD skipped under EXTERNAL_IPERF (would kill lab iperf)"
+		return 0
+	}
+
+	log "=== health unload probe ==="
+	saved_ip=$(save_iface_ipv4)
+	iface_down 2>/dev/null || true
+	sleep 1
+	if ! rmmod ibmveth 2>/dev/null; then
+		log "WARN: rmmod ibmveth failed (module busy? holders=$(ls /sys/module/ibmveth/holders 2>/dev/null | tr '\n' ' '))"
+		_health_fail_mode && die "CHECK_HEALTH: rmmod failed"
+		iface_up 2>/dev/null || true
+		return 0
+	fi
+	ok "rmmod ibmveth succeeded"
+	sleep 1
+	if [[ "${IBMVETH_DYNDBG:-0}" = 1 || "${DYNDBG:-0}" = 1 ]]; then
+		load_ibmveth "+p"
+	else
+		load_ibmveth
+	fi
+	sleep 2
+	ip link show "$IFACE" >/dev/null || die "netdev $IFACE missing after health reload"
+	iface_up
+	restore_iface_ipv4 "$saved_ip"
+	[[ -n "${PEER:-}" ]] && ping_ok || true
+	ok "health unload/reload probe passed"
 }
 
 
