@@ -24,9 +24,22 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 mkdir -p "$LOGDIR"
 
+# Color when stdout is a TTY (NO_COLOR=1 disables).
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+	_C_RED=$'\033[1;31m'
+	_C_YEL=$'\033[1;33m'
+	_C_GRN=$'\033[1;32m'
+	_C_BOLD=$'\033[1m'
+	_C_RST=$'\033[0m'
+else
+	_C_RED=; _C_YEL=; _C_GRN=; _C_BOLD=; _C_RST=
+fi
+
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
-die() { log "FAIL: $*"; exit 1; }
-ok()  { log "OK: $*"; }
+die() { printf '[%s] %sFAIL: %s%s\n' "$(date '+%H:%M:%S')" "$_C_RED" "$*" "$_C_RST" >&2; exit 1; }
+ok()  { printf '[%s] %sOK: %s%s\n' "$(date '+%H:%M:%S')" "$_C_GRN" "$*" "$_C_RST"; }
+warn() { printf '[%s] %sWARN: %s%s\n' "$(date '+%H:%M:%S')" "$_C_YEL" "$*" "$_C_RST"; }
+alert() { printf '[%s] %s*** ALERT: %s ***%s\n' "$(date '+%H:%M:%S')" "$_C_RED" "$*" "$_C_RST"; }
 
 need_root() {
 	[[ $(id -u) -eq 0 ]] || die "run as root"
@@ -455,6 +468,14 @@ _MEM_BASE_AVAIL=
 _MEM_BASE_SLAB=
 _SOFTNET_BASE=
 _HEALTH_IRQ_BASE=
+_HEALTH_ALERTS=0
+_HEALTH_ALERT_MSGS=()
+
+_health_note_alert() {
+	_HEALTH_ALERTS=$((_HEALTH_ALERTS + 1))
+	_HEALTH_ALERT_MSGS+=("$1")
+	alert "$1"
+}
 
 _health_enabled() {
 	[[ "${CHECK_HEALTH:-0}" = 1 || "${CHECK_MEM:-0}" = 1 ]]
@@ -527,6 +548,8 @@ health_baseline_init() {
 	_MEM_PREV_SLAB=$_MEM_BASE_SLAB
 	_SOFTNET_BASE=$(_softnet_totals)
 	_HEALTH_IRQ_BASE=$(count_iface_irqs)
+	_HEALTH_ALERTS=0
+	_HEALTH_ALERT_MSGS=()
 	ok "CHECK_HEALTH baseline Avail=$((_MEM_BASE_AVAIL / 1024))MB Slab=$((_MEM_BASE_SLAB / 1024))MB softnet=$_SOFTNET_BASE irqs=$_HEALTH_IRQ_BASE (log $HEALTH_LOG)"
 }
 
@@ -559,11 +582,11 @@ health_check_after() {
 
 	# --- memory growth ---
 	if [[ "$d_avail" -gt $((MEM_GROW_MB * 1024)) ]]; then
-		log "WARN: MemAvailable dropped $((d_avail / 1024))MB after $label (threshold ${MEM_GROW_MB}MB)"
+		_health_note_alert "MemAvailable dropped $((d_avail / 1024))MB after $label (threshold ${MEM_GROW_MB}MB)"
 		_health_fail_mode && fail=1
 	fi
 	if [[ "$d_slab" -gt $((MEM_GROW_MB * 1024)) ]]; then
-		log "WARN: Slab grew $((d_slab / 1024))MB after $label (threshold ${MEM_GROW_MB}MB)"
+		_health_note_alert "Slab grew $((d_slab / 1024))MB after $label (threshold ${MEM_GROW_MB}MB)"
 		_health_fail_mode && fail=1
 	fi
 
@@ -577,7 +600,7 @@ health_check_after() {
 	dt=$((soft_t - base_t))
 	log "health[$label]: softnet dropped Δ=$dd time_squeeze Δ=$dt (since baseline)"
 	if [[ "$dd" -gt 1000 || "$dt" -gt 1000 ]]; then
-		log "WARN: softnet pressure high after $label (droppedΔ=$dd squeezeΔ=$dt)"
+		_health_note_alert "softnet pressure high after $label (droppedΔ=$dd squeezeΔ=$dt)"
 		_health_fail_mode && fail=1
 	fi
 
@@ -590,7 +613,7 @@ health_check_after() {
 		if [[ "$rxn" -ge 1 && "$irqs" -gt 0 && "$irqs" -ne "$rxn" ]]; then
 			# Allow minor mismatch right after resize; warn only if far off
 			if [[ "$irqs" -lt "$rxn" || "$irqs" -gt $((rxn + 2)) ]]; then
-				log "WARN: IRQ count $irqs vs RX queues $rxn after $label"
+				_health_note_alert "IRQ count $irqs vs RX queues $rxn after $label"
 				_health_fail_mode && fail=1
 			fi
 		fi
@@ -605,13 +628,13 @@ health_check_after() {
 		warn_count=$(dmesg | tail -n "$delta" | grep -ciE 'ibmveth.*(WARN|WARNING)|WARNING:.*ibmveth|WARN_ON' || true)
 	fi
 	if [[ "${leak_count:-0}" -gt 0 ]]; then
-		log "FAIL: dmesg $leak_count new kmemleak/memory-leak line(s) after $label"
+		_health_note_alert "dmesg $leak_count new kmemleak/memory-leak line(s) after $label"
 		dmesg | tail -n "$delta" | grep -iE 'kmemleak|memory leak|memleak' | tail -10 | \
 			while read -r line; do log "  $line"; done
 		fail=1
 	fi
 	if [[ "${warn_count:-0}" -gt 0 ]]; then
-		log "WARN: dmesg $warn_count ibmveth/WARN-related line(s) after $label"
+		_health_note_alert "dmesg $warn_count ibmveth/WARN-related line(s) after $label"
 		dmesg | tail -n "$delta" | grep -iE 'ibmveth.*(WARN|WARNING)|WARNING:.*ibmveth|WARN_ON' | tail -8 | \
 			while read -r line; do log "  $line"; done
 		_health_fail_mode && fail=1
@@ -631,7 +654,7 @@ mem_check_after() { health_check_after "$@"; }
 
 # End-of-suite summary vs baseline (always when CHECK_HEALTH on).
 health_summary() {
-	local avail slab soft soft_d soft_t base_d base_t dd dt irqs
+	local avail slab soft soft_d soft_t base_d base_t dd dt irqs msg
 
 	_health_enabled || return 0
 	avail=$(_mem_read_kb MemAvailable)
@@ -652,10 +675,21 @@ health_summary() {
 	log "  softnet:      dropped Δ=$dd  time_squeeze Δ=$dt"
 	log "  irqs now:     $irqs  (baseline $_HEALTH_IRQ_BASE)  rx=$(current_rx 2>/dev/null || echo ?)"
 	log "  detail log:   $HEALTH_LOG"
+
+	if [[ "${_HEALTH_ALERTS:-0}" -eq 0 ]]; then
+		ok "HEALTH PASS — no alerts this suite"
+	else
+		alert "HEALTH ALERTS: ${_HEALTH_ALERTS} during suite (soft unless HEALTH_FAIL=1)"
+		for msg in "${_HEALTH_ALERT_MSGS[@]+"${_HEALTH_ALERT_MSGS[@]}"}"; do
+			log "  • $msg"
+		done
+	fi
+
 	{
 		echo "=== HEALTH SUMMARY $(date '+%F %T') ==="
 		echo "Avail_MB ${_MEM_BASE_AVAIL}->${avail} Slab_MB ${_MEM_BASE_SLAB}->${slab}"
 		echo "softnet_dropped_delta=$dd softnet_squeeze_delta=$dt irqs=$irqs"
+		echo "alerts=${_HEALTH_ALERTS:-0}"
 		echo
 	} >>"$HEALTH_LOG"
 }
