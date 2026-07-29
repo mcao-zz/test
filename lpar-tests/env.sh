@@ -577,15 +577,16 @@ stop_iperf_servers() {
 	sleep 1
 }
 
-# Print DUT-side clues when inbound gate sees Δ=0.
+# Print DUT-side clues when inbound gate fails (Δ=0 or below threshold).
 diagnose_inbound_fail() {
 	local a b link_rx
-	log "=== inbound gate diagnostics (Δ=0) ==="
+	log "=== inbound gate diagnostics ==="
 	log "IFACE=$IFACE PEER=$PEER current_rx=$(current_rx) addr=$(save_iface_ipv4)"
+	log "thresholds: MIN_RX_DELTA=$MIN_RX_DELTA RX_SAMPLE_SECS=$RX_SAMPLE_SECS EXTERNAL_IPERF=${EXTERNAL_IPERF:-0}"
 	if ping -c 2 -W 1 "$PEER" >/dev/null 2>&1; then
-		ok "ping $PEER OK (L3 up — problem is likely iperf clients, not link)"
+		ok "ping $PEER OK (L3 up)"
 	else
-		log "WARN: ping $PEER failed — fix L3 before iperf"
+		log "WARN: ping $PEER failed — fix L3 before expecting bulk RX"
 	fi
 	a=$(sum_rx_packets)
 	sleep 2
@@ -596,10 +597,23 @@ diagnose_inbound_fail() {
 	log "iperf3 listeners: $(ss -ltnp 2>/dev/null | grep -c iperf3 || echo 0)"
 	ethtool -S "$IFACE" 2>/dev/null | grep -E '^[[:space:]]*rx([0-9]+_)?packets:' | head -12 | \
 		while read -r line; do log "  $line"; done
+
+	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
+		cat >/dev/tty <<EOF
+
+----------------------------------------------------------------------
+EXTERNAL_IPERF=1: harness will not start/stop iperf.
+Gate needs total Δ>=$MIN_RX_DELTA over ${RX_SAMPLE_SECS}s on $IFACE.
+If Δ is low, raise lab traffic or override: MIN_RX_DELTA=50 RX_SAMPLE_SECS=10
+----------------------------------------------------------------------
+EOF
+		return 0
+	fi
+
 	cat >/dev/tty <<EOF
 
 ----------------------------------------------------------------------
-Δ=0 means NO TCP bulk hit $IFACE. Do this on lp7 BEFORE typing R:
+Low/zero RX Δ on $IFACE. Do this on peer BEFORE typing R:
 
   pkill iperf3 2>/dev/null
   export DUT_IP=$(ip -4 -o addr show dev "$IFACE" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
@@ -731,7 +745,7 @@ prompt_start_inbound_iperf() {
 		log "pre-gate geometry: RX=$(current_rx) (want $MQ_PROOF_RX for later MQ proof)"
 		if ! prove_bulk_inbound_rx "gate-bulk-external" "$RX_SAMPLE_SECS" "$MIN_RX_DELTA"; then
 			diagnose_inbound_fail
-			die "EXTERNAL_IPERF=1 but bulk RX not seen on $IFACE (keep lab iperf running)"
+			die "EXTERNAL_IPERF=1: inbound Δ below MIN_RX_DELTA=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s (raise lab traffic or lower MIN_RX_DELTA)"
 		fi
 		prove_mq_rx_under_load "gate-mq-rx-external"
 		return 0

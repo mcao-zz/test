@@ -59,13 +59,18 @@ done
 : "${EXTERNAL_IPERF:=0}"
 
 # Lab already runs long-lived iperf server+client — do not manage iperf.
+# Soft thresholds: lab fabrics often ~tens–hundreds pkt/5s, not 10k.
 if [[ "$EXTERNAL_IPERF" = 1 ]]; then
 	: "${RESTART_IPERF:=0}"
 	: "${NONINTERACTIVE:=1}"
+	: "${MIN_RX_DELTA:=100}"
+	: "${RX_SAMPLE_SECS:=10}"
+	: "${MIN_ACTIVE_RX_QUEUES:=1}"
 	export EXTERNAL_IPERF RESTART_IPERF NONINTERACTIVE
+	export MIN_RX_DELTA RX_SAMPLE_SECS MIN_ACTIVE_RX_QUEUES
 	# Heavy scripts must not spawn their own clients.
 	export IPERF=0
-	log "EXTERNAL_IPERF=1 — skip iperf start/stop/restart; expect traffic already flowing"
+	log "EXTERNAL_IPERF=1 — skip iperf start/stop/restart; soft gate MIN_RX_DELTA=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s"
 fi
 
 # Soft under-load path for slow/lossy lab fabrics (still useful for close/-L/hfunc).
