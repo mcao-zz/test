@@ -69,6 +69,10 @@ for want in crc32 xor; do
 		set_ok=$((set_ok + 1))
 		ping_ok
 	else
+		# Missing .get_rx_ring_count → userspace never reaches set_rxfh.
+		if grep -qi 'Cannot get RX ring count' "$LOGDIR/t21-set-$want.err"; then
+			die "ethtool -X hfunc $want: missing get_rx_ring_count (driver bug): $(tr '\n' ' ' <"$LOGDIR/t21-set-$want.err")"
+		fi
 		if grep -qiE 'not supported|Operation not supported|EOPNOTSUPP' \
 			"$LOGDIR/t21-set-$want.err"; then
 			log "hfunc $want not supported by firmware (OK)"

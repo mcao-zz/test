@@ -1,6 +1,6 @@
 ibmveth MQ v4 — Deep-dive test plan by patch
 ============================================
-Tip: 7fc556ffa0f6 (15 patches after 805185b7c7a1)
+Tip: 35aa5469dac5 (15 patches after 805185b7c7a1)
 Branch: veth-mq-upstream-netnext-v4-review
 Companion: TEST-PLAN.txt (T1–T21), lpar-tests/
 
@@ -179,11 +179,14 @@ P15 — Add RSS hash algorithm configuration support
   Claims: get_rxfh/set_rxfh via H_VIOCTL ILLAN_MULTIQUEUE_HASH;
           Murmur↔crc32 and Additive↔xor ethtool aliases; key_size and
           indir_size 0 (hypervisor-managed); -EOPNOTSUPP without
-          multi_queue; reject key/indir/unsupported hfunc.
+          multi_queue; reject key/indir/unsupported hfunc;
+          get_rx_ring_count returns num_rx_queues (required for ethtool -X).
   Deep dive:
     D15-get      ethtool -x shows crc32 or xor when MQ FW.
     D15-set      ethtool -X hfunc crc32|xor round-trip; ping OK;
                  FW may support only one alias — at least one set OK.
+                 Fail hard on "Cannot get RX ring count" (missing
+                 get_rx_ring_count), do not treat as FW limit.
     D15-reject   -X equal / hkey / hfunc toeplitz rejected.
     D15-nomq     on non-MQ FW: -x/-X → Operation not supported (T13 lab).
   Auto: t21-rss-hfunc.sh

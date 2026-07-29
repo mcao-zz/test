@@ -1,7 +1,7 @@
 ibmveth MQ RX v4 — LPAR validation plan
 ========================================
 Series: veth-mq-upstream-netnext-v4-review (15 patches, base 805185b7c7a1)
-Tip (update when tip moves): 7fc556ffa0f6
+Tip (update when tip moves): 35aa5469dac5
 Focus: open order, close under traffic, ethtool -L, poll hangs, SQ regression,
        plus v4-specific review fixes (IRQ ownership, down-state stash, stats,
        P14 correlator/shutdown), plus P15 RSS hash (ethtool -x/-X)
