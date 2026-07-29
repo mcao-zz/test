@@ -51,8 +51,14 @@ Examples:
   # With debug mode
   $0 -d net0 -t 10.48.34.150 -D
 
+  # Out-of-tree module
+  sudo IBMVETH_KO=/home/ming/ibmveth-build $0 -d env9 -t 192.168.1.134 -D
+
   # Use defaults
   $0
+
+Environment:
+  IBMVETH_KO   Path to ibmveth.ko (or build dir); reload uses insmod instead of modprobe
 
 EOF
     exit 1
@@ -859,10 +865,10 @@ log ""
 
 # Test 12: Module Reload with Debug
 log "=== 15. Test 7: Module Reload ==="
-log "Testing module reload..."
+log "Testing module reload (IBMVETH_KO=${IBMVETH_KO:-modprobe})..."
 
-if [ $DEBUG_MODE -eq 1 ]; then
-    log "${CYAN}Debug mode enabled - will use 'modprobe ibmveth dyndbg=+p'${NC}"
+if [ "$DEBUG_MODE" = "1" ] || [ "$DEBUG_MODE" = "on" ]; then
+    log "${CYAN}Debug mode enabled - dyndbg=+p${NC}"
 fi
 
 # Bring interface down
@@ -874,16 +880,18 @@ if sudo rmmod ibmveth; then
     log "✓ Module removed"
     sleep 2
 
-    # Reload module with or without debug
-    if [ $DEBUG_MODE -eq 1 ]; then
+    _REPO_ROOT=$(cd "$(dirname "$0")" && pwd)
+    # shellcheck source=ibmveth-ko-load.sh
+    . "$_REPO_ROOT/ibmveth-ko-load.sh"
+    if [ "$DEBUG_MODE" = "1" ] || [ "$DEBUG_MODE" = "on" ]; then
         log "Loading module with dynamic debug enabled..."
-        if sudo modprobe ibmveth dyndbg=+p; then
+        if ibmveth_module_load "+p"; then
             log "✓ Module loaded with debug"
         else
             log "${RED}✗${NC} Module load with debug failed"
         fi
     else
-        if sudo modprobe ibmveth; then
+        if ibmveth_module_load; then
             log "✓ Module loaded"
         else
             log "${RED}✗${NC} Module load failed"

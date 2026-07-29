@@ -10,6 +10,7 @@ export PATH
 : "${DUT_IP:=}"                        # this LPAR's test IP (optional)
 : "${IPERF3:=}"                        # optional absolute path to iperf3
 : "${IBMVETH_KO:=}"                    # optional path to ibmveth.ko (or its directory)
+: "${EXTERNAL_IPERF:=0}"               # 1 = lab owns iperf; never start/stop/restart
 : "${IPERF_TIME:=60}"
 : "${IPERF_PARALLEL:=4}"
 : "${CYCLE_SLEEP:=0.5}"
@@ -336,38 +337,21 @@ save_iface_ipv4() {
 
 # Resolve IBMVETH_KO to an absolute .ko path (file, or dir containing ibmveth.ko).
 resolve_ibmveth_ko() {
-	local p=${IBMVETH_KO:-}
-
-	[[ -n "$p" ]] || return 1
-	if [[ -d "$p" ]]; then
-		p="$p/ibmveth.ko"
-	fi
-	[[ -f "$p" ]] || die "IBMVETH_KO not found: $IBMVETH_KO (need ibmveth.ko file or directory)"
-	# Absolute path — insmod cwd-independent under sudo.
-	( cd "$(dirname "$p")" && printf '%s/%s\n' "$(pwd -P)" "$(basename "$p")" )
+	local p
+	# shellcheck source=../ibmveth-ko-load.sh
+	. "$ROOT/ibmveth-ko-load.sh"
+	p=$(ibmveth_resolve_ko) || return 1
+	printf '%s\n' "$p"
 }
 
 # Load ibmveth: IBMVETH_KO=... uses insmod; otherwise modprobe.
 # Optional arg: dyndbg param string (e.g. +p). Empty = no dyndbg.
 load_ibmveth() {
 	local dyndbg=${1:-}
-	local ko
 
-	if ko=$(resolve_ibmveth_ko); then
-		log "loading ibmveth from IBMVETH_KO=$ko${dyndbg:+ dyndbg=$dyndbg}"
-		if [[ -n "$dyndbg" ]]; then
-			insmod "$ko" "dyndbg=$dyndbg" || die "insmod $ko dyndbg=$dyndbg failed"
-		else
-			insmod "$ko" || die "insmod $ko failed"
-		fi
-	else
-		log "loading ibmveth via modprobe${dyndbg:+ dyndbg=$dyndbg}"
-		if [[ -n "$dyndbg" ]]; then
-			modprobe ibmveth "dyndbg=$dyndbg" || die "modprobe ibmveth dyndbg=$dyndbg failed"
-		else
-			modprobe ibmveth || die "modprobe ibmveth failed"
-		fi
-	fi
+	# shellcheck source=../ibmveth-ko-load.sh
+	. "$ROOT/ibmveth-ko-load.sh"
+	ibmveth_module_load "$dyndbg" || die "ibmveth module load failed (IBMVETH_KO=${IBMVETH_KO:-modprobe})"
 }
 
 # Reload ibmveth with dyndbg=+p; save/restore IPv4 on $IFACE.
@@ -509,8 +493,18 @@ tty_read() {
 # If RESTART_IPERF=1 (default for heavy gate), kill existing listeners on
 # IPERF_PORTS first — stale -s after module reload often looks "up" but
 # clients never produce RX Δ.
+# EXTERNAL_IPERF=1: lab already runs server+client — do not touch iperf.
 start_iperf_servers() {
 	local p n=0 pid
+
+	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
+		log "EXTERNAL_IPERF=1 — not starting/restarting iperf3 (lab-owned)"
+		n=$(ss -ltnp 2>/dev/null | grep -c iperf3) || true
+		n=${n:-0}
+		log "iperf3 listeners currently: $n (left untouched)"
+		return 0
+	fi
+
 	need_iperf3
 
 	if [[ "${RESTART_IPERF:-1}" = 1 ]]; then
@@ -565,6 +559,13 @@ start_iperf_servers() {
 
 stop_iperf_servers() {
 	local pid
+
+	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
+		log "EXTERNAL_IPERF=1 — not stopping iperf3 (lab-owned)"
+		IPERF_SERVER_PIDS=
+		return 0
+	fi
+
 	if [[ -z "${IPERF_SERVER_PIDS:-}" ]]; then
 		return 0
 	fi
@@ -709,6 +710,7 @@ prove_mq_rx_under_load() {
 
 # Interactive: print lp7 commands, wait for "yes", prove bulk + MQ RX.
 # NONINTERACTIVE=1 skips prompts (still requires traffic already running).
+# EXTERNAL_IPERF=1: lab owns iperf — no start/stop/restart, no peer recipe prompt.
 # ALLOW_WEAK_RX=1 restores old "continue anyway" escape hatch (not for evidence).
 prompt_start_inbound_iperf() {
 	local dut_ip tries=0 ans=
@@ -719,6 +721,21 @@ prompt_start_inbound_iperf() {
 			| awk '{print $4}' | cut -d/ -f1 | head -1)
 	fi
 	[[ -n "$dut_ip" ]] || die "set DUT_IP= (this LPAR address on $IFACE)"
+
+	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
+		log "EXTERNAL_IPERF=1 — skip iperf start/stop/prompt; proving existing inbound RX"
+		# Never clear lab-owned listeners.
+		RESTART_IPERF=0 start_iperf_servers
+		ethtool_rx "$MQ_PROOF_RX" 2>/dev/null || ethtool_rx 4 || true
+		sleep 1
+		log "pre-gate geometry: RX=$(current_rx) (want $MQ_PROOF_RX for later MQ proof)"
+		if ! prove_bulk_inbound_rx "gate-bulk-external" "$RX_SAMPLE_SECS" "$MIN_RX_DELTA"; then
+			diagnose_inbound_fail
+			die "EXTERNAL_IPERF=1 but bulk RX not seen on $IFACE (keep lab iperf running)"
+		fi
+		prove_mq_rx_under_load "gate-mq-rx-external"
+		return 0
+	fi
 
 	# Fresh servers after quiet-phase reload/ifdown churn.
 	RESTART_IPERF="${RESTART_IPERF:-1}" start_iperf_servers

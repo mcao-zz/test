@@ -129,17 +129,20 @@ reload_module() {
     sleep 2
 
     # Reload module with or without debug
+    _REPO_ROOT=$(cd "$(dirname "$0")" && pwd)
+    # shellcheck source=ibmveth-ko-load.sh
+    . "$_REPO_ROOT/ibmveth-ko-load.sh"
     if [ $DEBUG_MODE -eq 1 ]; then
-        print_info "Loading ibmveth module with dynamic debug..."
-        if modprobe ibmveth dyndbg=+p; then
+        print_info "Loading ibmveth module with dynamic debug (IBMVETH_KO=${IBMVETH_KO:-modprobe})..."
+        if ibmveth_module_load "+p"; then
             print_pass "Module loaded with debug enabled"
         else
             print_error "Failed to load module with debug"
             return 1
         fi
     else
-        print_info "Loading ibmveth module..."
-        if modprobe ibmveth; then
+        print_info "Loading ibmveth module (IBMVETH_KO=${IBMVETH_KO:-modprobe})..."
+        if ibmveth_module_load; then
             print_pass "Module loaded"
         else
             print_error "Failed to load module"

@@ -29,7 +29,9 @@ if [[ -n "$TX_SET" ]]; then
 	ethtool -L "$IFACE" tx "$TX_SET" || die "ethtool -L tx $TX_SET failed"
 	sleep 1
 	assert_tx_geometry "$TX_SET"
-	if have_iperf3; then
+	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
+		log "EXTERNAL_IPERF=1 — skip short outbound iperf (lab owns traffic)"
+	elif have_iperf3; then
 		log "short outbound iperf to exercise TX=$TX_SET"
 		"$IPERF3" -c "$PEER" -t 5 -P 2 >"$LOGDIR/t19-iperf-tx.log" 2>&1 || \
 			log "WARN: outbound iperf failed (peer iperf3 -s listening?); TX geometry still asserted"

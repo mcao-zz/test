@@ -12,6 +12,7 @@
 # Usage:
 #   IFACE=env9 PEER=192.168.100.2 sudo ./run-all.sh
 #   IBMVETH_KO=/path/to/ibmveth.ko ...   # or directory containing ibmveth.ko
+#   EXTERNAL_IPERF=1 ...      # lab owns iperf; never start/stop/restart or prompt
 #   DYNDBG=1 ...              # default: reload with dyndbg=+p before tests
 #   DYNDBG=0 ...              # skip initial debug reload
 #   SKIP_HEAVY=1 ...          # quiet only
@@ -31,6 +32,17 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 
 : "${DYNDBG:=1}"
 : "${SIMPLE_IPERF:=0}"
+: "${EXTERNAL_IPERF:=0}"
+
+# Lab already runs long-lived iperf server+client — do not manage iperf.
+if [[ "$EXTERNAL_IPERF" = 1 ]]; then
+	: "${RESTART_IPERF:=0}"
+	: "${NONINTERACTIVE:=1}"
+	export EXTERNAL_IPERF RESTART_IPERF NONINTERACTIVE
+	# Heavy scripts must not spawn their own clients.
+	export IPERF=0
+	log "EXTERNAL_IPERF=1 — skip iperf start/stop/restart; expect traffic already flowing"
+fi
 
 # Soft under-load path for slow/lossy lab fabrics (still useful for close/-L/hfunc).
 if [[ "$SIMPLE_IPERF" = 1 ]]; then
@@ -51,7 +63,7 @@ need_root
 need_peer
 
 log "Logs under $LOGDIR"
-log "IFACE=$IFACE PEER=$PEER ROOT=$ROOT DYNDBG=$DYNDBG SIMPLE_IPERF=$SIMPLE_IPERF IBMVETH_KO=${IBMVETH_KO:-modprobe}"
+log "IFACE=$IFACE PEER=$PEER ROOT=$ROOT DYNDBG=$DYNDBG SIMPLE_IPERF=$SIMPLE_IPERF EXTERNAL_IPERF=$EXTERNAL_IPERF IBMVETH_KO=${IBMVETH_KO:-modprobe}"
 log "MQ proof: MIN_RX_DELTA=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s, MIN_ACTIVE_RX_QUEUES=$MIN_ACTIVE_RX_QUEUES, MQ_PROOF_RX=$MQ_PROOF_RX"
 log "See $ROOT/TEST-PLAN.txt / TEST-PLAN-DEEP-DIVE.txt"
 
