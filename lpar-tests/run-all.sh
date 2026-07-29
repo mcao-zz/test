@@ -23,8 +23,8 @@
 #   SKIP_RSS=1 ...            # skip quiet T21 RSS hfunc
 #   SKIP_RSS_RX=1 ...         # skip heavy T21 under-traffic hash switch
 #   EXTERNAL_IPERF=1 ...      # lab owns iperf; de-dupe phase1↔heavy under-RX
-#   RX_CYCLE=quick ...        # default: short T14 (max→1→mid→max→1)
-#   RX_CYCLE=full ...         # exhaustive T14 every integer (slow under load)
+#   T14_CYCLE=quick ...       # default: short T14 (max→1→mid→max→1)
+#   T14_CYCLE=full ...        # exhaustive T14 every integer (slow under load)
 #   LAB_FULL=1 ...            # also run ../test-veth-mq.sh from lab-smoke
 #   SIMPLE_IPERF=1 ...        # one-port long iperf; soft Δ; no multi-queue spread demand
 #   CHECK_HEALTH=1 ...        # default ON: after each test + end summary (mem/softnet/IRQ/dmesg)
@@ -46,7 +46,7 @@ while [[ $# -gt 0 ]]; do
 			sed -n '2,30p' "$0" | sed 's/^# \?//'
 			exit 0
 			;;
-		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SIMPLE_IPERF=*|SKIP_*=*|NONINTERACTIVE=*|MIN_*=*|MQ_*=*|IPERF_*=*|LAB_FULL=*|DUT_IP=*|RESTART_IPERF=*|CHECK_HEALTH=*|CHECK_MEM=*|MEM_GROW_MB=*|MEM_FAIL=*|HEALTH_FAIL=*|HEALTH_UNLOAD=*|RX_CYCLE=*|DELAY=*)
+		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SIMPLE_IPERF=*|SKIP_*=*|NONINTERACTIVE=*|MIN_*=*|MQ_*=*|IPERF_*=*|LAB_FULL=*|DUT_IP=*|RESTART_IPERF=*|CHECK_HEALTH=*|CHECK_MEM=*|MEM_GROW_MB=*|MEM_FAIL=*|HEALTH_FAIL=*|HEALTH_UNLOAD=*|T14_CYCLE=*|RX_CYCLE=*|DELAY=*)
 			export "${1?}"
 			shift
 			;;
@@ -77,9 +77,15 @@ _HAD_CLI_MIN_ACTIVE_RX_QUEUES=${MIN_ACTIVE_RX_QUEUES+1}
 : "${EXTERNAL_IPERF:=0}"
 : "${CHECK_HEALTH:=1}"
 : "${CHECK_MEM:=0}"
-: "${RX_CYCLE:=quick}"
-export RX_CYCLE
-log "RX_CYCLE=$RX_CYCLE (T14; set RX_CYCLE=full for exhaustive resize)"
+# T14 mode (quick|full). Do NOT reuse RX_CYCLE — env.sh defaults that to the
+# ethtool-L-cycle numeric list ("16 1 8 …"), which made "=quick" a no-op.
+: "${T14_CYCLE:=quick}"
+# Compat: if user set RX_CYCLE=quick|full on the sudo line, honor it for T14.
+case "${RX_CYCLE:-}" in
+	quick|full) T14_CYCLE=$RX_CYCLE ;;
+esac
+export T14_CYCLE
+log "T14_CYCLE=$T14_CYCLE (set T14_CYCLE=full for exhaustive resize; RX_CYCLE stays L-cycle list)"
 # CHECK_MEM is an alias for CHECK_HEALTH; CHECK_HEALTH=0 wins if set explicitly after
 if [[ "$CHECK_MEM" = 1 ]]; then
 	CHECK_HEALTH=1

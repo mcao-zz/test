@@ -176,12 +176,12 @@ T14 — Resize geometry triple-check (automated by rx_queue_size.sh)
     sysfs queues/rx-* == N (if present)
     dmesg delta contains "Successfully resized to N RX queues"
     no Oops/BUG; error counters not exploding
-  RX_CYCLE=quick (run-all / t14 default): max→1→mid→max→1 (~5 steps)
-  RX_CYCLE=full (standalone default): every integer up and down
+  T14_CYCLE=quick (run-all / t14 default): max→1→mid→max→1 (~5 steps)
+  T14_CYCLE=full (standalone default): every integer up and down
   Pass: ./rx_queue_size.sh succeeds end-to-end
-  Script: sudo PEER=$PEER RX_CYCLE=quick ./rx_queue_size.sh $IFACE 1
+  Script: sudo PEER=$PEER T14_CYCLE=quick ./rx_queue_size.sh $IFACE 1
           sudo PEER=$PEER UNDER_RX=1 ./lpar-tests/t14-rx-cycle.sh
-          sudo … RX_CYCLE=full …   # exhaustive (slow under load)
+          sudo … T14_CYCLE=full …   # exhaustive (slow under load)
 
 T15 — Resize under multi-flow RX (cover-letter style)
   On DUT: iperf3 -s -p 5201..5216 -D

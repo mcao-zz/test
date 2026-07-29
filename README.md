@@ -234,7 +234,7 @@ sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
    here and skips phase-1 close-sq / L-cycle (heavy covers them).
 2. **Iperf + MQ RX proof** — start `iperf3 -s`, wait for `yes` (or soft gate
    under `EXTERNAL_IPERF`), require bulk + MQ spread
-3. **Heavy** — T14 `UNDER_RX` (`RX_CYCLE=quick` default), close-mq / parallel
+3. **Heavy** — T14 `UNDER_RX` (`T14_CYCLE=quick` default), close-mq / parallel
    / L-under-rx, MQ re-proof after churn. With `EXTERNAL_IPERF=1`, skips
    mq-rx-pre / t22-rx / t21-rx (already done in phase 1 + gate).
 4. **Cleanup** — stop only iperf servers this run started; final ping

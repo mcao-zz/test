@@ -2,9 +2,10 @@
 # rx_queue_size.sh — cycle RX queue counts via ethtool -L with post-resize checks
 #
 # Default pattern (max from ethtool -l, capped at 16):
-#   RX_CYCLE=full (default standalone): baseline → max → 1 → 2…max → (max-1)…1
-#   RX_CYCLE=quick (run-all default):   max → 1 → mid → max → 1
+#   T14_CYCLE=full (default standalone): baseline → max → 1 → 2…max → (max-1)…1
+#   T14_CYCLE=quick (run-all / t14 default): max → 1 → mid → max → 1
 #     covers scale-down, scale-up, mid geometry without every integer step
+#   Note: env.sh RX_CYCLE is a separate numeric list for ethtool-L-cycle.sh
 #
 # After each successful -L, validates:
 #   - ethtool -l RX count
@@ -25,8 +26,9 @@
 #   sudo ./rx_queue_size.sh [iface] [delay_seconds]
 #   sudo PEER=192.168.100.2 ./rx_queue_size.sh env9 2
 #   sudo PEER=… UNDER_RX=1 MIN_RX_DELTA=10000 ./rx_queue_size.sh env9 2
-#   sudo RX_CYCLE=quick UNDER_RX=1 ./rx_queue_size.sh env9 1
-#   sudo RX_CYCLE=full  …              # exhaustive (every integer)
+#   sudo RX_CYCLE=quick UNDER_RX=1 ./rx_queue_size.sh env9 1   # compat alias
+#   sudo T14_CYCLE=quick UNDER_RX=1 ./rx_queue_size.sh env9 1
+#   sudo T14_CYCLE=full  …              # exhaustive (every integer)
 #
 # Logs: /tmp/ibmveth-rx-cycle-<iface>-<timestamp>/
 
@@ -36,7 +38,14 @@ IFACE="${1:-env9}"
 DELAY="${2:-2}"
 PEER="${PEER:-}"
 UNDER_RX="${UNDER_RX:-0}"
-RX_CYCLE="${RX_CYCLE:-full}"
+# Prefer T14_CYCLE; accept RX_CYCLE=quick|full for compat (not the L-cycle number list).
+T14_CYCLE="${T14_CYCLE:-}"
+if [ -z "$T14_CYCLE" ]; then
+	case "${RX_CYCLE:-}" in
+		quick|full) T14_CYCLE=$RX_CYCLE ;;
+		*) T14_CYCLE=full ;;
+	esac
+fi
 RX_SAMPLE_SECS="${RX_SAMPLE_SECS:-5}"
 MIN_RX_DELTA="${MIN_RX_DELTA:-10000}"
 MIN_ACTIVE_RX_QUEUES="${MIN_ACTIVE_RX_QUEUES:-2}"
@@ -192,7 +201,7 @@ check_rx_under_load() {
 	# Scale-up: give the hypervisor hasher a longer window to hit new queues
 	if [ "$expect" -gt "$prev" ]; then
 		local extra=${RX_SCALEUP_EXTRA:-5}
-		[ "$RX_CYCLE" = "quick" ] && extra=${RX_SCALEUP_EXTRA:-2}
+		[ "$T14_CYCLE" = "quick" ] && extra=${RX_SCALEUP_EXTRA:-2}
 		wait=$((RX_SAMPLE_SECS + extra))
 	fi
 
@@ -352,7 +361,7 @@ validate_after_resize() {
 	# --- optional peer ping ---
 	if [ -n "$PEER" ]; then
 		local ping_n=3
-		[ "$RX_CYCLE" = "quick" ] && ping_n=1
+		[ "$T14_CYCLE" = "quick" ] && ping_n=1
 		if ping -c "$ping_n" -W 2 "$PEER" > "$stepdir/ping.txt" 2>&1; then
 			ok "ping -c $ping_n $PEER ok"
 		else
@@ -413,7 +422,7 @@ echo "=============================================="
 echo "  ibmveth RX Queue Cycle Test"
 echo "  Interface: ${IFACE}"
 echo "  Current RX: ${CUR:-?}   Max used: ${MAX_RX}"
-echo "  RX_CYCLE: ${RX_CYCLE}   Delay: ${DELAY}s"
+echo "  T14_CYCLE: ${T14_CYCLE}   Delay: ${DELAY}s"
 echo "  Peer ping: ${PEER:-disabled (set PEER=ip)}"
 echo "  UNDER_RX: ${UNDER_RX}  (bulk Δ>=${MIN_RX_DELTA}/${RX_SAMPLE_SECS}s)"
 echo "  Logs: $LOGDIR"
@@ -424,7 +433,7 @@ ethtool -l "$IFACE" | tee "$LOGDIR/ethtool-l-initial.txt"
 echo ""
 ethtool -S "$IFACE" > "$LOGDIR/ethtool-S-initial.txt" 2>/dev/null || true
 
-if [ "$RX_CYCLE" = "quick" ]; then
+if [ "$T14_CYCLE" = "quick" ]; then
 	# Sparse: max → 1 → mid → max → 1  (~5 steps vs ~2*max)
 	echo "========================================="
 	echo "  QUICK: → RX ${MAX_RX}"
