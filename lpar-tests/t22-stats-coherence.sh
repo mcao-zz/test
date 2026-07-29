@@ -130,7 +130,7 @@ compare_pair() {
 		return 0
 	fi
 	if [[ "$soft" = 1 ]]; then
-		log "WARN: $name mismatch under live traffic (non-atomic): $a vs $b (Δ=$diff) — rely on sample Δ"
+		warn "$name mismatch under live traffic (non-atomic): $a vs $b (Δ=$diff) — rely on sample Δ"
 		return 0
 	fi
 	die "$name mismatch: $a vs $b (Δ=$diff; tol abs=$STATS_TOLERANCE pct=${STATS_TOL_PCT}%)"
@@ -147,7 +147,7 @@ rx_proc=$(proc_netdev_rx_packets)
 rx_q=${rx_q:-0}; rx_ip=${rx_ip:-0}; rx_proc=${rx_proc:-0}
 
 log "snapshot RX: ethtool_sum(rxN)=$rx_q  ip_link=$rx_ip  proc_net_dev=$rx_proc"
-[[ "$rx_q" -gt 0 || "$rx_ip" -gt 0 ]] || log "WARN: all RX totals 0 (quiet iface — under-traffic checks may soft-skip)"
+[[ "$rx_q" -gt 0 || "$rx_ip" -gt 0 ]] || warn "all RX totals 0 (quiet iface — under-traffic checks may soft-skip)"
 
 compare_pair "ethtool_sum(rxN) vs ip -s link RX" "$rx_q" "$rx_ip" "$snap_soft"
 compare_pair "ethtool_sum(rxN) vs /proc/net/dev RX" "$rx_q" "$rx_proc" "$snap_soft"

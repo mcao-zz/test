@@ -461,6 +461,10 @@ check_no_oops() {
 : "${MEM_GROW_MB:=64}"            # MemAvailable drop / Slab rise warn threshold (MB)
 : "${HEALTH_FAIL:=0}"
 : "${MEM_FAIL:=0}"                # alias → HEALTH_FAIL
+: "${HEALTH_ERR_DELTA:=100}"      # soft ALERT if adapter error counters grow this much per test
+: "${HEALTH_LOAD_MULT:=4}"        # soft ALERT if loadavg1 > nproc * this
+: "${HEALTH_STEAL_PCT:=25}"       # soft ALERT if %steal over end-of-suite 1s sample
+: "${HEALTH_CPU:=0}"              # 1 = also 1s CPU sample after each test (slower)
 HEALTH_LOG="${HEALTH_LOG:-$LOGDIR/health-check.log}"
 _MEM_PREV_AVAIL=
 _MEM_PREV_SLAB=
@@ -470,11 +474,61 @@ _SOFTNET_BASE=
 _HEALTH_IRQ_BASE=
 _HEALTH_ALERTS=0
 _HEALTH_ALERT_MSGS=()
+_HEALTH_ERR_INV=
+_HEALTH_ERR_NOBUF=
+_HEALTH_ERR_REP=
+_HEALTH_HCALL_REG=
+_HEALTH_HCALL_FREE=
 
 _health_note_alert() {
 	_HEALTH_ALERTS=$((_HEALTH_ALERTS + 1))
 	_HEALTH_ALERT_MSGS+=("$1")
 	alert "$1"
+}
+
+_nproc() {
+	nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1
+}
+
+_loadavg1() {
+	awk '{ print $1 }' /proc/loadavg 2>/dev/null || echo 0
+}
+
+# Print "user nice system idle iowait irq softirq steal" jiffies from /proc/stat cpu line.
+_cpu_jiffies() {
+	awk '/^cpu / {
+		print $2+0, $3+0, $4+0, $5+0, $6+0, $7+0, $8+0, $9+0
+		exit
+	}' /proc/stat 2>/dev/null || echo "0 0 0 0 0 0 0 0"
+}
+
+# 1s sample → sets _CPU_IDLE_PCT _CPU_STEAL_PCT _CPU_SOFTIRQ_PCT (integers).
+_cpu_sample_1s() {
+	local a b
+	local au an as ai aw aq asf ast
+	local bu bn bs bi bw bq bsf bst
+	local du dn ds di dw dq dsf dst tot
+
+	a=$(_cpu_jiffies)
+	sleep 1
+	b=$(_cpu_jiffies)
+	read -r au an as ai aw aq asf ast <<<"$a"
+	read -r bu bn bs bi bw bq bsf bst <<<"$b"
+	du=$((bu - au)); dn=$((bn - an)); ds=$((bs - as)); di=$((bi - ai))
+	dw=$((bw - aw)); dq=$((bq - aq)); dsf=$((bsf - asf)); dst=$((bst - ast))
+	tot=$((du + dn + ds + di + dw + dq + dsf + dst))
+	[[ "$tot" -gt 0 ]] || tot=1
+	_CPU_IDLE_PCT=$((di * 100 / tot))
+	_CPU_STEAL_PCT=$((dst * 100 / tot))
+	_CPU_SOFTIRQ_PCT=$((dsf * 100 / tot))
+}
+
+_health_snap_adapter_stats() {
+	_HEALTH_ERR_INV=$(stat_val rx_invalid_buffer); _HEALTH_ERR_INV=${_HEALTH_ERR_INV:-0}
+	_HEALTH_ERR_NOBUF=$(stat_val rx_no_buffer); _HEALTH_ERR_NOBUF=${_HEALTH_ERR_NOBUF:-0}
+	_HEALTH_ERR_REP=$(stat_val replenish_add_buff_failure); _HEALTH_ERR_REP=${_HEALTH_ERR_REP:-0}
+	_HEALTH_HCALL_REG=$(stat_val hcall_reg_lan_queue); _HEALTH_HCALL_REG=${_HEALTH_HCALL_REG:-0}
+	_HEALTH_HCALL_FREE=$(stat_val hcall_free_lan_queue); _HEALTH_HCALL_FREE=${_HEALTH_HCALL_FREE:-0}
 }
 
 _health_enabled() {
@@ -531,9 +585,9 @@ mem_snapshot() {
 	printf '%s %s %s %s %s\n' "$avail" "$slab" "$sunr" "$kmal" "${soft// /_}"
 }
 
-# Init baselines for CHECK_HEALTH (memory + softnet + IRQs).
+# Init baselines for CHECK_HEALTH (memory + softnet + IRQs + adapter stats).
 health_baseline_init() {
-	local v soft irqs
+	local v soft irqs load n
 
 	_health_enabled || return 0
 	CHECK_HEALTH=1
@@ -550,7 +604,10 @@ health_baseline_init() {
 	_HEALTH_IRQ_BASE=$(count_iface_irqs)
 	_HEALTH_ALERTS=0
 	_HEALTH_ALERT_MSGS=()
-	ok "CHECK_HEALTH baseline Avail=$((_MEM_BASE_AVAIL / 1024))MB Slab=$((_MEM_BASE_SLAB / 1024))MB softnet=$_SOFTNET_BASE irqs=$_HEALTH_IRQ_BASE (log $HEALTH_LOG)"
+	_health_snap_adapter_stats
+	load=$(_loadavg1)
+	n=$(_nproc)
+	ok "CHECK_HEALTH baseline Avail=$((_MEM_BASE_AVAIL / 1024))MB Slab=$((_MEM_BASE_SLAB / 1024))MB softnet=$_SOFTNET_BASE irqs=$_HEALTH_IRQ_BASE load=$load/${n}cpu err(inv/nobuf/rep)=$_HEALTH_ERR_INV/$_HEALTH_ERR_NOBUF/$_HEALTH_ERR_REP (log $HEALTH_LOG)"
 }
 
 # Backward-compatible name.
@@ -619,6 +676,59 @@ health_check_after() {
 		fi
 	fi
 
+	# --- adapter error stats + hcall counters (healthiness) ---
+	if ip link show "$IFACE" &>/dev/null; then
+		local inv nobuf rep reg free
+		local d_inv d_nobuf d_rep d_reg d_free
+		local load n load_lim
+
+		inv=$(stat_val rx_invalid_buffer); inv=${inv:-0}
+		nobuf=$(stat_val rx_no_buffer); nobuf=${nobuf:-0}
+		rep=$(stat_val replenish_add_buff_failure); rep=${rep:-0}
+		reg=$(stat_val hcall_reg_lan_queue); reg=${reg:-0}
+		free=$(stat_val hcall_free_lan_queue); free=${free:-0}
+		d_inv=$((inv - ${_HEALTH_ERR_INV:-0}))
+		d_nobuf=$((nobuf - ${_HEALTH_ERR_NOBUF:-0}))
+		d_rep=$((rep - ${_HEALTH_ERR_REP:-0}))
+		d_reg=$((reg - ${_HEALTH_HCALL_REG:-0}))
+		d_free=$((free - ${_HEALTH_HCALL_FREE:-0}))
+		log "health[$label]: stats Δ invalid=$d_inv no_buffer=$d_nobuf replenish_fail=$d_rep  hcall_reg_q Δ=$d_reg free_q Δ=$d_free"
+		{
+			echo "adapter_stats_after_$label inv=$inv nobuf=$nobuf rep=$rep reg=$reg free=$free"
+			echo "adapter_delta_after_$label d_inv=$d_inv d_nobuf=$d_nobuf d_rep=$d_rep d_reg=$d_reg d_free=$d_free"
+		} >>"$HEALTH_LOG"
+		if [[ "$d_inv" -gt "$HEALTH_ERR_DELTA" || "$d_nobuf" -gt "$HEALTH_ERR_DELTA" || \
+		      "$d_rep" -gt "$HEALTH_ERR_DELTA" ]]; then
+			_health_note_alert "adapter error stats after $label: invalidΔ=$d_inv no_bufferΔ=$d_nobuf replenishΔ=$d_rep (lim $HEALTH_ERR_DELTA)"
+			_health_fail_mode && fail=1
+		fi
+		# hcall_* growth is expected on resize/open — log only; T16 asserts directionality.
+		_HEALTH_ERR_INV=$inv
+		_HEALTH_ERR_NOBUF=$nobuf
+		_HEALTH_ERR_REP=$rep
+		_HEALTH_HCALL_REG=$reg
+		_HEALTH_HCALL_FREE=$free
+
+		# --- load / optional CPU ---
+		load=$(_loadavg1)
+		n=$(_nproc)
+		# bash arithmetic needs integer load*100
+		load_lim=$((n * HEALTH_LOAD_MULT * 100))
+		log "health[$label]: loadavg1=$load nproc=$n"
+		if awk -v L="$load" -v lim="$load_lim" 'BEGIN { exit !((L * 100) > lim) }'; then
+			_health_note_alert "loadavg1=$load high after $label (nproc=$n ×${HEALTH_LOAD_MULT})"
+			_health_fail_mode && fail=1
+		fi
+		if [[ "${HEALTH_CPU:-0}" = 1 ]]; then
+			_cpu_sample_1s
+			log "health[$label]: CPU 1s idle=${_CPU_IDLE_PCT}% softirq=${_CPU_SOFTIRQ_PCT}% steal=${_CPU_STEAL_PCT}%"
+			if [[ "${_CPU_STEAL_PCT:-0}" -gt "$HEALTH_STEAL_PCT" ]]; then
+				_health_note_alert "CPU steal=${_CPU_STEAL_PCT}% after $label (lim ${HEALTH_STEAL_PCT}%)"
+				_health_fail_mode && fail=1
+			fi
+		fi
+	fi
+
 	# --- dmesg: kmemleak + ibmveth WARN (since mark; do not advance) ---
 	mark=$(cat "$LOGDIR/dmesg.mark" 2>/dev/null || echo 0)
 	cur=$(dmesg | wc -l)
@@ -655,6 +765,7 @@ mem_check_after() { health_check_after "$@"; }
 # End-of-suite summary vs baseline (always when CHECK_HEALTH on).
 health_summary() {
 	local avail slab soft soft_d soft_t base_d base_t dd dt irqs msg
+	local load n inv nobuf rep
 
 	_health_enabled || return 0
 	avail=$(_mem_read_kb MemAvailable)
@@ -668,13 +779,28 @@ health_summary() {
 	dd=$((soft_d - base_d))
 	dt=$((soft_t - base_t))
 	irqs=$(count_iface_irqs 2>/dev/null || echo 0)
+	load=$(_loadavg1)
+	n=$(_nproc)
+	inv=$(stat_val rx_invalid_buffer 2>/dev/null || echo 0); inv=${inv:-0}
+	nobuf=$(stat_val rx_no_buffer 2>/dev/null || echo 0); nobuf=${nobuf:-0}
+	rep=$(stat_val replenish_add_buff_failure 2>/dev/null || echo 0); rep=${rep:-0}
 
 	log "========== HEALTH SUMMARY (suite vs baseline) =========="
 	log "  MemAvailable: $((_MEM_BASE_AVAIL / 1024)) → $((avail / 1024)) MB  (Δ=$(( (avail - _MEM_BASE_AVAIL) / 1024 )) MB)"
 	log "  Slab:         $((_MEM_BASE_SLAB / 1024)) → $((slab / 1024)) MB  (Δ=$(( (slab - _MEM_BASE_SLAB) / 1024 )) MB)"
 	log "  softnet:      dropped Δ=$dd  time_squeeze Δ=$dt"
 	log "  irqs now:     $irqs  (baseline $_HEALTH_IRQ_BASE)  rx=$(current_rx 2>/dev/null || echo ?)"
+	log "  loadavg1:     $load  (nproc=$n)"
+	log "  adapter err:  invalid=$inv no_buffer=$nobuf replenish_fail=$rep"
+	log "  hcall:        reg_lan_queue=${_HEALTH_HCALL_REG:-?} free_lan_queue=${_HEALTH_HCALL_FREE:-?}"
 	log "  detail log:   $HEALTH_LOG"
+
+	# End-of-suite 1s CPU sample (cheap once).
+	_cpu_sample_1s
+	log "  CPU 1s:       idle=${_CPU_IDLE_PCT}% softirq=${_CPU_SOFTIRQ_PCT}% steal=${_CPU_STEAL_PCT}%"
+	if [[ "${_CPU_STEAL_PCT:-0}" -gt "$HEALTH_STEAL_PCT" ]]; then
+		_health_note_alert "end-suite CPU steal=${_CPU_STEAL_PCT}% (lim ${HEALTH_STEAL_PCT}%)"
+	fi
 
 	if [[ "${_HEALTH_ALERTS:-0}" -eq 0 ]]; then
 		ok "HEALTH PASS — no alerts this suite"
@@ -688,7 +814,9 @@ health_summary() {
 	{
 		echo "=== HEALTH SUMMARY $(date '+%F %T') ==="
 		echo "Avail_MB ${_MEM_BASE_AVAIL}->${avail} Slab_MB ${_MEM_BASE_SLAB}->${slab}"
-		echo "softnet_dropped_delta=$dd softnet_squeeze_delta=$dt irqs=$irqs"
+		echo "softnet_dropped_delta=$dd softnet_squeeze_delta=$dt irqs=$irqs load=$load"
+		echo "err_inv=$inv err_nobuf=$nobuf err_rep=$rep"
+		echo "cpu_idle=${_CPU_IDLE_PCT} softirq=${_CPU_SOFTIRQ_PCT} steal=${_CPU_STEAL_PCT}"
 		echo "alerts=${_HEALTH_ALERTS:-0}"
 		echo
 	} >>"$HEALTH_LOG"

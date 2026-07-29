@@ -27,9 +27,10 @@
 #   T14_CYCLE=full ...        # exhaustive T14 every integer (slow under load)
 #   LAB_FULL=1 ...            # also run ../test-veth-mq.sh from lab-smoke
 #   SIMPLE_IPERF=1 ...        # one-port long iperf; soft Δ; no multi-queue spread demand
-#   CHECK_HEALTH=1 ...        # default ON: after each test + end summary (mem/softnet/IRQ/dmesg)
+#   CHECK_HEALTH=1 ...        # default ON: after each test + end summary (mem/softnet/IRQ/stats/CPU)
 #   CHECK_HEALTH=0 ...        # disable health checks
-#   HEALTH_FAIL=1 MEM_GROW_MB=64 HEALTH_UNLOAD=1
+#   HEALTH_FAIL=1 MEM_GROW_MB=64 HEALTH_UNLOAD=1 HEALTH_CPU=1
+#   HEALTH_ERR_DELTA=100 HEALTH_LOAD_MULT=4 HEALTH_STEAL_PCT=25
 #   MIN_RX_DELTA=10000 MIN_ACTIVE_RX_QUEUES=2 MQ_PROOF_RX=8 ...
 #
 set -euo pipefail

@@ -38,7 +38,7 @@ reg=$(delta before_up after_up hcall_reg_lan_queue)
 add=$(delta before_up after_up hcall_add_bufs_queue)
 log "scale-up 4→8: hcall_reg_lan_queue Δ=$reg  hcall_add_bufs_queue Δ=$add"
 [[ "$reg" -gt 0 ]] || die "expected hcall_reg_lan_queue to increase on scale-up"
-[[ "$add" -gt 0 ]] || log "WARN: hcall_add_bufs_queue Δ=0 (may be ok if pools quiet)"
+[[ "$add" -gt 0 ]] || warn "hcall_add_bufs_queue Δ=0 (may be ok if pools quiet)"
 
 snap before_down
 ethtool_rx 4 || die "scale-down 8→4"
