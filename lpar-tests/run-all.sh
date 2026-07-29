@@ -51,6 +51,14 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
+# Remember CLI-provided gate knobs before env.sh applies hard defaults.
+_CLI_MIN_RX_DELTA=${MIN_RX_DELTA-}
+_CLI_RX_SAMPLE_SECS=${RX_SAMPLE_SECS-}
+_CLI_MIN_ACTIVE_RX_QUEUES=${MIN_ACTIVE_RX_QUEUES-}
+_HAD_CLI_MIN_RX_DELTA=${MIN_RX_DELTA+1}
+_HAD_CLI_RX_SAMPLE_SECS=${RX_SAMPLE_SECS+1}
+_HAD_CLI_MIN_ACTIVE_RX_QUEUES=${MIN_ACTIVE_RX_QUEUES+1}
+
 # shellcheck source=env.sh
 . "$DIR/env.sh"
 
@@ -59,16 +67,27 @@ done
 : "${EXTERNAL_IPERF:=0}"
 
 # Lab already runs long-lived iperf server+client — do not manage iperf.
-# Soft thresholds: lab fabrics often ~tens–hundreds pkt/5s, not 10k.
+# Soft thresholds: env.sh sets MIN_RX_DELTA=10000; override unless CLI set them.
 if [[ "$EXTERNAL_IPERF" = 1 ]]; then
 	: "${RESTART_IPERF:=0}"
 	: "${NONINTERACTIVE:=1}"
-	: "${MIN_RX_DELTA:=100}"
-	: "${RX_SAMPLE_SECS:=10}"
-	: "${MIN_ACTIVE_RX_QUEUES:=1}"
+	if [[ -n "${_HAD_CLI_MIN_RX_DELTA:-}" ]]; then
+		MIN_RX_DELTA="$_CLI_MIN_RX_DELTA"
+	else
+		MIN_RX_DELTA=100
+	fi
+	if [[ -n "${_HAD_CLI_RX_SAMPLE_SECS:-}" ]]; then
+		RX_SAMPLE_SECS="$_CLI_RX_SAMPLE_SECS"
+	else
+		RX_SAMPLE_SECS=10
+	fi
+	if [[ -n "${_HAD_CLI_MIN_ACTIVE_RX_QUEUES:-}" ]]; then
+		MIN_ACTIVE_RX_QUEUES="$_CLI_MIN_ACTIVE_RX_QUEUES"
+	else
+		MIN_ACTIVE_RX_QUEUES=1
+	fi
 	export EXTERNAL_IPERF RESTART_IPERF NONINTERACTIVE
 	export MIN_RX_DELTA RX_SAMPLE_SECS MIN_ACTIVE_RX_QUEUES
-	# Heavy scripts must not spawn their own clients.
 	export IPERF=0
 	log "EXTERNAL_IPERF=1 — skip iperf start/stop/restart; soft gate MIN_RX_DELTA=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s"
 fi
