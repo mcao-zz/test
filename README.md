@@ -235,6 +235,7 @@ sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
 sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
 sudo IFACE=env9 PEER=192.168.100.2 DYNDBG=1 ./run-all.sh          # default
 sudo IFACE=env9 PEER=192.168.100.2 DYNDBG=0 ./run-all.sh          # no phase-0 reload
+sudo IFACE=env9 PEER=192.168.100.2 SIMPLE_IPERF=1 ./run-all.sh    # one-port soft under-load
 sudo IFACE=env9 PEER=192.168.100.2 LAB_FULL=1 ./run-all.sh        # + test-veth-mq.sh
 sudo IFACE=env9 PEER=192.168.100.2 SKIP_HEAVY=1 ./run-all.sh
 sudo IFACE=env9 PEER=192.168.100.2 SKIP_QUIET=1 ./run-all.sh

@@ -690,7 +690,32 @@ prompt_start_inbound_iperf() {
 	sleep 1
 	log "pre-gate geometry: RX=$(current_rx) (want $MQ_PROOF_RX for later MQ proof)"
 
-	cat >/dev/tty <<EOF
+	if [[ "${SIMPLE_IPERF:-0}" = 1 ]]; then
+		cat >/dev/tty <<EOF
+
+**********************************************************************
+*  HEAVY GATE (SIMPLE_IPERF=1) — one long iperf, soft thresholds     *
+*  Not valid for MQ/RSS multi-queue spread claims.                   *
+*  Δ=0 is NORMAL until the long client below is running.             *
+**********************************************************************
+On PEER ($PEER):
+
+  pkill iperf3 2>/dev/null
+  export DUT_IP=$dut_ip
+  ping -c 3 \$DUT_IP
+  # KEEP THIS RUNNING (do not use only a 15s test then stop):
+  iperf3 -c \$DUT_IP -t 3600 -P 4 -p 5201 &
+
+On DUT, wait until counters move, then type yes:
+  watch -n1 'ethtool -S $IFACE | grep -E "rx[0-9]+_packets" | head'
+
+Need Δ>=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s (queues>=$MIN_ACTIVE_RX_QUEUES).
+DUT listening as $dut_ip on: $IPERF_PORTS
+**********************************************************************
+
+EOF
+	else
+		cat >/dev/tty <<EOF
 
 **********************************************************************
 *  HEAVY PHASE GATE — lp7 iperf required from here on                *
@@ -702,9 +727,8 @@ On PEER ($PEER), run NOW (old clients died during quiet reload/ifdown):
   pkill iperf3 2>/dev/null
   export DUT_IP=$dut_ip
   ping -c 3 \$DUT_IP
-  # REQUIRED smoke test (must show Mbits/sec) BEFORE typing yes:
+  # smoke (optional), then LONG multi-flow — leave running:
   iperf3 -c \$DUT_IP -t 15 -p 5201 -P 1
-  # then full multi-flow — leave running for the whole heavy phase:
   for p in $IPERF_PORTS; do
     iperf3 -c \$DUT_IP -t 3600 -P 4 -p \$p &
   done
@@ -718,12 +742,17 @@ DUT listening as $dut_ip on: $IPERF_PORTS
 **********************************************************************
 
 EOF
+	fi
 
 	if [[ "${NONINTERACTIVE:-0}" = 1 ]]; then
 		log "NONINTERACTIVE=1 — checking for existing inbound RX (no prompt)"
 	else
 		while true; do
-			tty_read "Type 'yes' ONLY after lp7 one-port smoke test shows Mbits/sec: " ans
+			if [[ "${SIMPLE_IPERF:-0}" = 1 ]]; then
+				tty_read "Type 'yes' AFTER long iperf (-t 3600) is running and RX moves: " ans
+			else
+				tty_read "Type 'yes' ONLY after lp7 long multi-flow iperf is running: " ans
+			fi
 			case "$ans" in
 				yes|YES|y|Y) break ;;
 				*) printf 'Please type yes (or Ctrl-C to abort).\n' >/dev/tty ;;

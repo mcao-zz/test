@@ -20,6 +20,7 @@
 #   SKIP_RSS=1 ...            # skip quiet T21 RSS hfunc
 #   SKIP_RSS_RX=1 ...         # skip heavy T21 under-traffic hash switch
 #   LAB_FULL=1 ...            # also run ../test-veth-mq.sh from lab-smoke
+#   SIMPLE_IPERF=1 ...        # one-port long iperf; soft Δ; no multi-queue spread demand
 #   MIN_RX_DELTA=10000 MIN_ACTIVE_RX_QUEUES=2 MQ_PROOF_RX=8 ...
 #
 set -euo pipefail
@@ -28,12 +29,28 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 . "$DIR/env.sh"
 
 : "${DYNDBG:=1}"
+: "${SIMPLE_IPERF:=0}"
+
+# Soft under-load path for slow/lossy lab fabrics (still useful for close/-L/hfunc).
+if [[ "$SIMPLE_IPERF" = 1 ]]; then
+	: "${MIN_RX_DELTA:=20}"
+	: "${RX_SAMPLE_SECS:=10}"
+	: "${MIN_ACTIVE_RX_QUEUES:=1}"
+	: "${IPERF_PORTS:=5201}"
+	: "${MQ_PROOF_RX:=8}"
+	# Multi-queue spread / T14 new-queue proofs need many flows — skip in simple mode.
+	: "${SKIP_MQ_PROOF:=1}"
+	: "${SKIP_T14:=1}"
+	export MIN_RX_DELTA RX_SAMPLE_SECS MIN_ACTIVE_RX_QUEUES IPERF_PORTS MQ_PROOF_RX
+	export SKIP_MQ_PROOF SKIP_T14 SIMPLE_IPERF
+	log "SIMPLE_IPERF=1 — one-port load; soft gate; skip MQ-spread proofs and T14"
+fi
 
 need_root
 need_peer
 
 log "Logs under $LOGDIR"
-log "IFACE=$IFACE PEER=$PEER ROOT=$ROOT DYNDBG=$DYNDBG"
+log "IFACE=$IFACE PEER=$PEER ROOT=$ROOT DYNDBG=$DYNDBG SIMPLE_IPERF=$SIMPLE_IPERF"
 log "MQ proof: MIN_RX_DELTA=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s, MIN_ACTIVE_RX_QUEUES=$MIN_ACTIVE_RX_QUEUES, MQ_PROOF_RX=$MQ_PROOF_RX"
 log "See $ROOT/TEST-PLAN.txt / TEST-PLAN-DEEP-DIVE.txt"
 
