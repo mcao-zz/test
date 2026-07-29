@@ -468,16 +468,45 @@ tty_read() {
 }
 
 # Start iperf3 -s on DUT (RX sink). Tracks only PIDs we spawn.
+# If RESTART_IPERF=1 (default for heavy gate), kill existing listeners on
+# IPERF_PORTS first — stale -s after module reload often looks "up" but
+# clients never produce RX Δ.
 start_iperf_servers() {
 	local p n=0 pid
 	need_iperf3
+
+	if [[ "${RESTART_IPERF:-1}" = 1 ]]; then
+		log "RESTART_IPERF=1 — clearing listeners on: $IPERF_PORTS"
+		for p in $IPERF_PORTS; do
+			while read -r pid; do
+				[[ -n "$pid" ]] || continue
+				kill "$pid" 2>/dev/null || true
+			done < <(ss -ltnp 2>/dev/null | awk -v p=":$p" '
+				$0 ~ p {
+					while (match($0, /pid=[0-9]+/)) {
+						print substr($0, RSTART+4, RLENGTH-4)
+						$0 = substr($0, RSTART+RLENGTH)
+					}
+				}')
+		done
+		sleep 1
+		IPERF_SERVER_PIDS=
+	fi
+
 	for p in $IPERF_PORTS; do
-		if ss -ltn 2>/dev/null | grep -q ":${p} "; then
-			log "iperf3 already listening on :$p"
+		if ss -ltn 2>/dev/null | grep -qE ":${p}([[:space:]]|$)"; then
+			log "iperf3 still listening on :$p (left in place)"
+			pid=$(ss -ltnp 2>/dev/null | awk -v p=":$p" '
+				$0 ~ p {
+					if (match($0, /pid=[0-9]+/)) {
+						print substr($0, RSTART+4, RLENGTH-4)
+						exit
+					}
+				}')
+			[[ -n "$pid" ]] && IPERF_SERVER_PIDS+=" $pid"
 		else
 			"$IPERF3" -s -p "$p" -D || die "failed to start $IPERF3 -s -p $p"
 			n=$((n + 1))
-			# Best-effort PID capture for later cleanup
 			pid=$(ss -ltnp 2>/dev/null | awk -v p=":$p" '
 				$0 ~ p {
 					if (match($0, /pid=[0-9]+/)) {
@@ -507,6 +536,44 @@ stop_iperf_servers() {
 	done
 	IPERF_SERVER_PIDS=
 	sleep 1
+}
+
+# Print DUT-side clues when inbound gate sees Δ=0.
+diagnose_inbound_fail() {
+	local a b link_rx
+	log "=== inbound gate diagnostics (Δ=0) ==="
+	log "IFACE=$IFACE PEER=$PEER current_rx=$(current_rx) addr=$(save_iface_ipv4)"
+	if ping -c 2 -W 1 "$PEER" >/dev/null 2>&1; then
+		ok "ping $PEER OK (L3 up — problem is likely iperf clients, not link)"
+	else
+		log "WARN: ping $PEER failed — fix L3 before iperf"
+	fi
+	a=$(sum_rx_packets)
+	sleep 2
+	b=$(sum_rx_packets)
+	log "rx*_packets sum: $a → $b (Δ=$((b - a)) over 2s)"
+	link_rx=$(ip -s link show "$IFACE" 2>/dev/null | awk '/RX:/{getline; print $1; exit}')
+	log "ip -s link $IFACE RX packets field≈${link_rx:-?}"
+	log "iperf3 listeners: $(ss -ltnp 2>/dev/null | grep -c iperf3 || echo 0)"
+	ethtool -S "$IFACE" 2>/dev/null | grep -E '^[[:space:]]*rx([0-9]+_)?packets:' | head -12 | \
+		while read -r line; do log "  $line"; done
+	cat >/dev/tty <<EOF
+
+----------------------------------------------------------------------
+Δ=0 means NO TCP bulk hit $IFACE. Do this on lp7 BEFORE typing R:
+
+  pkill iperf3 2>/dev/null
+  export DUT_IP=$(ip -4 -o addr show dev "$IFACE" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+  ping -c 3 \$DUT_IP
+  # ONE port — must print Mbits/sec (if this fails, paste the error):
+  iperf3 -c \$DUT_IP -t 15 -p 5201 -P 1
+  # then full:
+  for p in $IPERF_PORTS; do iperf3 -c \$DUT_IP -t 3600 -P 4 -p \$p & done
+
+On DUT, watch:  watch -n1 "ethtool -S $IFACE | grep rx0_packets"
+Only type R when that counter is climbing.
+----------------------------------------------------------------------
+EOF
 }
 
 # Soft check: any RX counter increase (legacy / ping-level). Prefer prove_*.
@@ -615,20 +682,33 @@ prompt_start_inbound_iperf() {
 	fi
 	[[ -n "$dut_ip" ]] || die "set DUT_IP= (this LPAR address on $IFACE)"
 
-	start_iperf_servers
+	# Fresh servers after quiet-phase reload/ifdown churn.
+	RESTART_IPERF="${RESTART_IPERF:-1}" start_iperf_servers
+
+	# Leave RX at MQ proof geometry so gate sample isn't stuck at RX=1.
+	ethtool_rx "$MQ_PROOF_RX" 2>/dev/null || ethtool_rx 4 || true
+	sleep 1
+	log "pre-gate geometry: RX=$(current_rx) (want $MQ_PROOF_RX for later MQ proof)"
 
 	cat >/dev/tty <<EOF
 
 **********************************************************************
 *  STOP — start inbound iperf on lp7 ($PEER) and KEEP IT RUNNING    *
 **********************************************************************
-On PEER ($PEER), run (long enough for the whole heavy phase):
+Quiet phase reloads/ifdowns kill old clients. Start them NOW on lp7:
 
+  pkill iperf3 2>/dev/null
   export DUT_IP=$dut_ip
+  ping -c 3 \$DUT_IP
+  # REQUIRED smoke test (must show Mbits/sec):
+  iperf3 -c \$DUT_IP -t 15 -p 5201 -P 1
+  # then full multi-flow:
   for p in $IPERF_PORTS; do
     iperf3 -c \$DUT_IP -t 3600 -P 4 -p \$p &
   done
-  wait
+
+On DUT, confirm RX climbing before typing yes:
+  watch -n1 'ethtool -S $IFACE | grep -E "rx[0-9]+_packets" | head'
 
 Need bulk RX (Δ>=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s) and packets on
 >=$MIN_ACTIVE_RX_QUEUES queues at RX=$MQ_PROOF_RX. Leave clients up.
@@ -641,7 +721,7 @@ EOF
 		log "NONINTERACTIVE=1 — checking for existing inbound RX (no prompt)"
 	else
 		while true; do
-			tty_read "Type 'yes' when lp7 iperf clients are running: " ans
+			tty_read "Type 'yes' ONLY after lp7 one-port smoke test succeeded: " ans
 			case "$ans" in
 				yes|YES|y|Y) break ;;
 				*) printf 'Please type yes (or Ctrl-C to abort).\n' >/dev/tty ;;
@@ -655,6 +735,7 @@ EOF
 		fi
 		tries=$((tries + 1))
 		log "WARN: bulk inbound not proven (try $tries) — Δ must be >= $MIN_RX_DELTA"
+		diagnose_inbound_fail
 		if [[ "${NONINTERACTIVE:-0}" = 1 ]]; then
 			die "inbound bulk RX not detected (start lp7 clients first)"
 		fi
