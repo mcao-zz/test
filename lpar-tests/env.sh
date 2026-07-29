@@ -693,26 +693,28 @@ prompt_start_inbound_iperf() {
 	cat >/dev/tty <<EOF
 
 **********************************************************************
-*  STOP — start inbound iperf on lp7 ($PEER) and KEEP IT RUNNING    *
+*  HEAVY PHASE GATE — lp7 iperf required from here on                *
+*  Quiet tests (T20 reload, T21 get/set, etc.) are already done.     *
+*  Δ=0 is NORMAL until you start clients below.                      *
 **********************************************************************
-Quiet phase reloads/ifdowns kill old clients. Start them NOW on lp7:
+On PEER ($PEER), run NOW (old clients died during quiet reload/ifdown):
 
   pkill iperf3 2>/dev/null
   export DUT_IP=$dut_ip
   ping -c 3 \$DUT_IP
-  # REQUIRED smoke test (must show Mbits/sec):
+  # REQUIRED smoke test (must show Mbits/sec) BEFORE typing yes:
   iperf3 -c \$DUT_IP -t 15 -p 5201 -P 1
-  # then full multi-flow:
+  # then full multi-flow — leave running for the whole heavy phase:
   for p in $IPERF_PORTS; do
     iperf3 -c \$DUT_IP -t 3600 -P 4 -p \$p &
   done
 
-On DUT, confirm RX climbing before typing yes:
+On DUT, confirm RX climbing:
   watch -n1 'ethtool -S $IFACE | grep -E "rx[0-9]+_packets" | head'
 
-Need bulk RX (Δ>=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s) and packets on
->=$MIN_ACTIVE_RX_QUEUES queues at RX=$MQ_PROOF_RX. Leave clients up.
-DUT is listening as $dut_ip on: $IPERF_PORTS
+Then type yes. Need Δ>=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s and
+>=$MIN_ACTIVE_RX_QUEUES queues at RX=$MQ_PROOF_RX.
+DUT listening as $dut_ip on: $IPERF_PORTS
 **********************************************************************
 
 EOF
@@ -721,7 +723,7 @@ EOF
 		log "NONINTERACTIVE=1 — checking for existing inbound RX (no prompt)"
 	else
 		while true; do
-			tty_read "Type 'yes' ONLY after lp7 one-port smoke test succeeded: " ans
+			tty_read "Type 'yes' ONLY after lp7 one-port smoke test shows Mbits/sec: " ans
 			case "$ans" in
 				yes|YES|y|Y) break ;;
 				*) printf 'Please type yes (or Ctrl-C to abort).\n' >/dev/tty ;;
@@ -734,7 +736,8 @@ EOF
 			break
 		fi
 		tries=$((tries + 1))
-		log "WARN: bulk inbound not proven (try $tries) — Δ must be >= $MIN_RX_DELTA"
+		log "WAITING: no bulk RX yet (try $tries) — Δ=0 means lp7 clients not flowing"
+		log "         (expected if you have not finished the one-port smoke test)"
 		diagnose_inbound_fail
 		if [[ "${NONINTERACTIVE:-0}" = 1 ]]; then
 			die "inbound bulk RX not detected (start lp7 clients first)"
@@ -747,7 +750,7 @@ EOF
 				*) ;;
 			esac
 		else
-			tty_read "[R]etry check or [A]bort? " ans
+			tty_read "[R]etry after fixing lp7, or [A]bort? " ans
 			case "${ans:-R}" in
 				A|a) die "aborted: inbound iperf not confirmed" ;;
 				*) ;;

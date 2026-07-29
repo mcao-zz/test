@@ -67,7 +67,7 @@ fi
 # Phase 1 — Quiet (no heavy inbound required)
 # ------------------------------------------------------------------
 if [[ "${SKIP_QUIET:-0}" != 1 ]]; then
-	log "========== PHASE 1: QUIET =========="
+	log "========== PHASE 1: QUIET (no lp7 iperf — geometry/debug/reload only) =========="
 	[[ "${SKIP_LAB:-0}" = 1 ]] || run lab-smoke "$DIR/lab-smoke.sh"
 	[[ "${SKIP_SMOKE:-0}" = 1 ]] || run smoke "$DIR/smoke.sh"
 	[[ "${SKIP_STATS:-0}" = 1 ]] || run t12-stats "$DIR/t12-stats-debugfs.sh"
@@ -92,7 +92,7 @@ fi
 # Phase 2 — Interactive inbound iperf gate + MQ RX proof
 # ------------------------------------------------------------------
 if [[ "${SKIP_HEAVY:-0}" != 1 ]]; then
-	log "========== PHASE 2: INBOUND IPERF + MQ RX PROOF =========="
+	log "========== PHASE 2: HEAVY GATE — start lp7 iperf NOW (not during quiet) =========="
 	iface_up
 	ping_ok
 	prompt_start_inbound_iperf

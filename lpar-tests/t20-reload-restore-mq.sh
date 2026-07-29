@@ -1,6 +1,7 @@
 #!/bin/bash
 # T20 — module reload restores MQ (P09/open path)
 # Reloads ibmveth (affects all ibmveth netdevs on the LPAR).
+# Quiet-phase test: does NOT need lp7 iperf / under-traffic.
 #
 #   sudo IFACE=env9 PEER=192.168.100.2 ./t20-reload-restore-mq.sh
 #
@@ -16,7 +17,7 @@ need_root
 need_peer
 save_dmesg_mark
 
-log "=== T20 module reload restores MQ on $IFACE ==="
+log "=== T20 module reload restores MQ on $IFACE (quiet — no iperf) ==="
 
 iface_up
 ethtool_rx "$RELOAD_RX" || die "pre-reload ethtool -L rx $RELOAD_RX failed"
@@ -27,7 +28,6 @@ ok "pre-reload MQ max_rx=$max_before RX=$RELOAD_RX"
 
 saved_ip=$(save_iface_ipv4)
 log "saved IPv4: ${saved_ip:-none}"
-reg_before=$(stat_val hcall_reg_lan_queue); reg_before=${reg_before:-0}
 
 log "bringing down $IFACE and reloading ibmveth..."
 iface_down
@@ -54,11 +54,25 @@ ethtool_rx "$RELOAD_RX" || die "post-reload ethtool -L rx $RELOAD_RX failed"
 sleep 1
 assert_rx_geometry "$RELOAD_RX"
 
+# Stats reset on rmmod — do NOT compare to pre-reload absolute values.
+# Snap after reload, then force a close/open and expect hcall_reg_lan_queue to grow.
+reg_base=$(stat_val hcall_reg_lan_queue); reg_base=${reg_base:-0}
+log "post-reload baseline hcall_reg_lan_queue=$reg_base — measuring open Δ via ifdown/up"
+iface_down
+sleep 1
+iface_up
+sleep 2
+ethtool_rx "$RELOAD_RX" || true
+sleep 1
+assert_rx_geometry "$RELOAD_RX"
+
 reg_after=$(stat_val hcall_reg_lan_queue); reg_after=${reg_after:-0}
-reg_delta=$((reg_after - reg_before))
-log "hcall_reg_lan_queue: $reg_before → $reg_after (Δ=$reg_delta)"
-# Open/reload with MQ should register subordinate queues at some point
-[[ "$reg_delta" -ge 1 ]] || log "WARN: hcall_reg_lan_queue Δ=$reg_delta (expected growth on MQ open)"
+reg_delta=$((reg_after - reg_base))
+log "hcall_reg_lan_queue after reopen: $reg_base → $reg_after (Δ=$reg_delta)"
+# MQ open should register subordinate queues (RX>1 ⇒ reg_lan_queue moves).
+[[ "$reg_delta" -ge 1 ]] || \
+	die "expected hcall_reg_lan_queue to increase on post-reload MQ open (Δ=$reg_delta)"
+ok "hcall_reg_lan_queue grew on post-reload open (Δ=$reg_delta)"
 
 ping_ok
 check_no_lockup
