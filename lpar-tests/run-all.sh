@@ -118,10 +118,14 @@ else
 fi
 
 # ------------------------------------------------------------------
-# Phase 1 — Quiet (no heavy inbound required)
+# Phase 1 — Functional / geometry (no harness-managed iperf required)
 # ------------------------------------------------------------------
 if [[ "${SKIP_QUIET:-0}" != 1 ]]; then
-	log "========== PHASE 1: QUIET (no lp7 iperf — geometry/debug/reload only) =========="
+	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
+		log "========== PHASE 1: FUNCTIONAL (geometry/debug/reload; lab iperf left alone) =========="
+	else
+		log "========== PHASE 1: QUIET (no lp7 iperf — geometry/debug/reload only) =========="
+	fi
 	[[ "${SKIP_LAB:-0}" = 1 ]] || run lab-smoke "$DIR/lab-smoke.sh"
 	[[ "${SKIP_SMOKE:-0}" = 1 ]] || run smoke "$DIR/smoke.sh"
 	[[ "${SKIP_STATS:-0}" = 1 ]] || run t12-stats "$DIR/t12-stats-debugfs.sh"
@@ -133,20 +137,28 @@ if [[ "${SKIP_QUIET:-0}" != 1 ]]; then
 	[[ "${SKIP_RSS:-0}" = 1 ]] || run t21-rss "$DIR/t21-rss-hfunc.sh"
 	[[ "${SKIP_HCALL:-0}" = 1 ]] || run t16-hcall "$DIR/t16-hcall-deltas.sh"
 	[[ "${SKIP_T20:-0}" = 1 ]] || run t20-reload "$DIR/t20-reload-restore-mq.sh"
-	# Quiet extras: no auto-outbound iperf (that hid the lp7 inbound gate)
+	# No auto-outbound iperf here (would hide the inbound gate when harness owns iperf).
 	[[ "${SKIP_CLOSE_SQ:-0}" = 1 ]] || \
 		run close-sq env RX=1 ROUNDS=10 IPERF=0 "$DIR/close-under-load.sh"
 	[[ "${SKIP_L_CYCLE:-0}" = 1 ]] || run L-cycle env LOOPS=2 IPERF=0 "$DIR/ethtool-L-cycle.sh"
-	ok "quiet phase complete"
+	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
+		ok "phase 1 functional complete"
+	else
+		ok "quiet phase complete"
+	fi
 else
-	log "SKIP_QUIET=1 — skipping quiet phase"
+	log "SKIP_QUIET=1 — skipping phase 1"
 fi
 
 # ------------------------------------------------------------------
-# Phase 2 — Interactive inbound iperf gate + MQ RX proof
+# Phase 2 — Inbound gate + MQ RX proof
 # ------------------------------------------------------------------
 if [[ "${SKIP_HEAVY:-0}" != 1 ]]; then
-	log "========== PHASE 2: HEAVY GATE — start lp7 iperf NOW (not during quiet) =========="
+	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
+		log "========== PHASE 2: INBOUND GATE (EXTERNAL_IPERF — prove lab traffic) =========="
+	else
+		log "========== PHASE 2: HEAVY GATE — start lp7 iperf NOW (not during quiet) =========="
+	fi
 	iface_up
 	ping_ok
 	prompt_start_inbound_iperf

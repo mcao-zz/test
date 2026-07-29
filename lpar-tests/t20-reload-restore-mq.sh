@@ -18,7 +18,11 @@ need_root
 need_peer
 save_dmesg_mark
 
-log "=== T20 module reload restores MQ on $IFACE (quiet — no iperf) ==="
+if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
+	log "=== T20 module reload restores MQ on $IFACE (EXTERNAL_IPERF — leave lab iperf alone) ==="
+else
+	log "=== T20 module reload restores MQ on $IFACE (quiet — no iperf) ==="
+fi
 
 iface_up
 ethtool_rx "$RELOAD_RX" || die "pre-reload ethtool -L rx $RELOAD_RX failed"
