@@ -9,10 +9,11 @@
 #      MQ RX proofs between stages (lp7 clients must stay up)
 #   4) Final MQ RX proof + ping
 #
-# Usage:
-#   IFACE=env9 PEER=192.168.100.2 sudo ./run-all.sh
-#   IBMVETH_KO=/path/to/ibmveth.ko ...   # or directory containing ibmveth.ko
-#   EXTERNAL_IPERF=1 ...      # lab owns iperf; never start/stop/restart or prompt
+# Usage (put overrides ON the sudo line — sudo clears prior exports):
+#   sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
+#   sudo IFACE=env9 PEER=... IBMVETH_KO=/path/to/ibmveth.ko ./run-all.sh
+#   sudo IFACE=env9 PEER=... EXTERNAL_IPERF=1 ./run-all.sh
+#   sudo IFACE=env9 PEER=... ./run-all.sh --external-iperf
 #   DYNDBG=1 ...              # default: reload with dyndbg=+p before tests
 #   DYNDBG=0 ...              # skip initial debug reload
 #   SKIP_HEAVY=1 ...          # quiet only
@@ -27,6 +28,29 @@
 #
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
+
+# Accept CLI flags / KEY=VAL before sourcing (sudo-safe when passed as args).
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--external-iperf|-E)
+			EXTERNAL_IPERF=1
+			shift
+			;;
+		--help|-h)
+			sed -n '2,30p' "$0" | sed 's/^# \?//'
+			exit 0
+			;;
+		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SIMPLE_IPERF=*|SKIP_*=*|NONINTERACTIVE=*|MIN_*=*|MQ_*=*|IPERF_*=*|LAB_FULL=*|DUT_IP=*|RESTART_IPERF=*)
+			export "${1?}"
+			shift
+			;;
+		*)
+			echo "unknown option: $1 (try --help)" >&2
+			exit 1
+			;;
+	esac
+done
+
 # shellcheck source=env.sh
 . "$DIR/env.sh"
 

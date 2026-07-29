@@ -243,7 +243,9 @@ sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
 ```bash
 sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
 sudo IFACE=env9 PEER=192.168.100.2 IBMVETH_KO=/home/ming/ibmveth-build ./run-all.sh
-sudo IFACE=env9 PEER=192.168.100.2 EXTERNAL_IPERF=1 ./run-all.sh  # lab owns iperf; no start/stop
+sudo IFACE=env9 PEER=192.168.100.2 EXTERNAL_IPERF=1 ./run-all.sh
+sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh --external-iperf
+# (vars must be on the sudo line, or pass as args — sudo drops prior exports)
 sudo IFACE=env9 PEER=192.168.100.2 DYNDBG=1 ./run-all.sh          # default
 sudo IFACE=env9 PEER=192.168.100.2 DYNDBG=0 ./run-all.sh          # no phase-0 reload
 sudo IFACE=env9 PEER=192.168.100.2 SIMPLE_IPERF=1 ./run-all.sh    # one-port soft under-load
