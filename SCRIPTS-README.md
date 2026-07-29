@@ -9,7 +9,7 @@ This file only documents the older kernel/module update helpers.
 |-------|-------|
 | Kernel remote | `git@github.com:mcao-zz/linux.git` |
 | Review branch | `veth-mq-upstream-netnext-v4-review` |
-| Tip (2026-07-30) | `03ddc8545b81` (P15 RSS + get_rx_ring_count; richer commit Background) |
+| Tip (2026-07-30) | `7e14b04f6649` (P15 RSS + get_rx_ring_count; richer commit Background) |
 
 Do **not** use the phase2/phase3/`veth-mq-for-testing` branch list below
 for v4 net-next validation unless you intentionally need an old tree.
