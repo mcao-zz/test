@@ -24,6 +24,8 @@
 #   SKIP_RSS_RX=1 ...         # skip heavy T21 under-traffic hash switch
 #   LAB_FULL=1 ...            # also run ../test-veth-mq.sh from lab-smoke
 #   SIMPLE_IPERF=1 ...        # one-port long iperf; soft Δ; no multi-queue spread demand
+#   CHECK_MEM=1 ...           # after each test: MemAvailable/Slab Δ + dmesg kmemleak
+#   MEM_GROW_MB=64 MEM_FAIL=1 # growth warn threshold; MEM_FAIL=1 makes growth fatal
 #   MIN_RX_DELTA=10000 MIN_ACTIVE_RX_QUEUES=2 MQ_PROOF_RX=8 ...
 #
 set -euo pipefail
@@ -40,8 +42,12 @@ while [[ $# -gt 0 ]]; do
 			sed -n '2,30p' "$0" | sed 's/^# \?//'
 			exit 0
 			;;
-		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SIMPLE_IPERF=*|SKIP_*=*|NONINTERACTIVE=*|MIN_*=*|MQ_*=*|IPERF_*=*|LAB_FULL=*|DUT_IP=*|RESTART_IPERF=*)
+		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SIMPLE_IPERF=*|SKIP_*=*|NONINTERACTIVE=*|MIN_*=*|MQ_*=*|IPERF_*=*|LAB_FULL=*|DUT_IP=*|RESTART_IPERF=*|CHECK_MEM=*|MEM_GROW_MB=*|MEM_FAIL=*)
 			export "${1?}"
+			shift
+			;;
+		--check-mem)
+			CHECK_MEM=1
 			shift
 			;;
 		*)
@@ -65,6 +71,7 @@ _HAD_CLI_MIN_ACTIVE_RX_QUEUES=${MIN_ACTIVE_RX_QUEUES+1}
 : "${DYNDBG:=1}"
 : "${SIMPLE_IPERF:=0}"
 : "${EXTERNAL_IPERF:=0}"
+: "${CHECK_MEM:=0}"
 
 # Lab already runs long-lived iperf server+client — do not manage iperf.
 # Soft thresholds: env.sh sets MIN_RX_DELTA=10000; override unless CLI set them.
@@ -111,7 +118,7 @@ need_root
 need_peer
 
 log "Logs under $LOGDIR"
-log "IFACE=$IFACE PEER=$PEER ROOT=$ROOT DYNDBG=$DYNDBG SIMPLE_IPERF=$SIMPLE_IPERF EXTERNAL_IPERF=$EXTERNAL_IPERF IBMVETH_KO=${IBMVETH_KO:-modprobe}"
+log "IFACE=$IFACE PEER=$PEER ROOT=$ROOT DYNDBG=$DYNDBG SIMPLE_IPERF=$SIMPLE_IPERF EXTERNAL_IPERF=$EXTERNAL_IPERF CHECK_MEM=$CHECK_MEM IBMVETH_KO=${IBMVETH_KO:-modprobe}"
 log "MQ proof: MIN_RX_DELTA=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s, MIN_ACTIVE_RX_QUEUES=$MIN_ACTIVE_RX_QUEUES, MQ_PROOF_RX=$MQ_PROOF_RX"
 log "See $ROOT/TEST-PLAN.txt / TEST-PLAN-DEEP-DIVE.txt"
 
@@ -121,12 +128,16 @@ run() {
 	log "######## START $name ########"
 	"$@"
 	log "######## DONE  $name ########"
+	mem_check_after "$name"
 }
 
 cleanup() {
 	stop_iperf_servers
 }
 trap cleanup EXIT
+
+# Baseline before phase 0 so dyndbg reload growth is visible.
+mem_baseline_init
 
 # ------------------------------------------------------------------
 # Phase 0 — Debug module load (dyndbg=+p) before any tests
@@ -239,6 +250,8 @@ log "========== PHASE 4: CLEANUP =========="
 stop_iperf_servers
 ping_ok
 check_no_lockup
+mem_check_after "suite-end"
+[[ "${CHECK_MEM:-0}" = 1 ]] && log "Memory log: $LOGDIR/memory-check.log"
 
 log "ALL REQUESTED TESTS PASSED — see $LOGDIR"
 log "Deep-dive by patch: $ROOT/TEST-PLAN-DEEP-DIVE.txt"

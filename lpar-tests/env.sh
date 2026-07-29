@@ -439,6 +439,123 @@ check_no_oops() {
 	rm -f "$f"
 }
 
+# Optional memory / leak hygiene (CHECK_MEM=1).
+# Snapshots MemAvailable + Slab + SUnreclaim; scans dmesg for kmemleak.
+# Default: warn on growth. MEM_FAIL=1 turns growth into die.
+: "${CHECK_MEM:=0}"
+: "${MEM_GROW_MB:=64}"            # MemAvailable drop / Slab rise warn threshold (MB)
+: "${MEM_FAIL:=0}"
+MEM_LOG="${MEM_LOG:-$LOGDIR/memory-check.log}"
+_MEM_PREV_AVAIL=
+_MEM_PREV_SLAB=
+_MEM_BASE_AVAIL=
+_MEM_BASE_SLAB=
+
+_mem_read_kb() {
+	# $1 = MemAvailable|Slab|SUnreclaim — print kB
+	awk -v k="$1:" '$1 == k { print $2; exit }' /proc/meminfo
+}
+
+_mem_slab_approx_kb() {
+	# Rough kmalloc*/dma-* active bytes from slabinfo (needs root).
+	[[ -r /proc/slabinfo ]] || { echo 0; return 0; }
+	awk '
+		/^#/ { next }
+		$1 ~ /^(kmalloc|dma-kmalloc)/ {
+			# cols: name active_objs num_objs objsize ...
+			sum += $3 * $4
+		}
+		END { printf "%d\n", sum / 1024 }
+	' /proc/slabinfo 2>/dev/null || echo 0
+}
+
+mem_snapshot() {
+	local label=$1
+	local avail slab sunr kmal
+	avail=$(_mem_read_kb MemAvailable)
+	slab=$(_mem_read_kb Slab)
+	sunr=$(_mem_read_kb SUnreclaim)
+	kmal=$(_mem_slab_approx_kb)
+	avail=${avail:-0}; slab=${slab:-0}; sunr=${sunr:-0}; kmal=${kmal:-0}
+	mkdir -p "$LOGDIR"
+	{
+		echo "=== mem $label $(date '+%F %T') ==="
+		echo "MemAvailable_kB=$avail Slab_kB=$slab SUnreclaim_kB=$sunr kmallocish_kB=$kmal"
+		grep -E '^(MemTotal|MemFree|MemAvailable|Slab|SUnreclaim|SReclaimable):' /proc/meminfo
+		echo
+	} >>"$MEM_LOG"
+	printf '%s %s %s %s\n' "$avail" "$slab" "$sunr" "$kmal"
+}
+
+mem_baseline_init() {
+	local v
+	[[ "${CHECK_MEM:-0}" = 1 ]] || return 0
+	MEM_LOG="$LOGDIR/memory-check.log"
+	: >"$MEM_LOG"
+	save_dmesg_mark
+	v=$(mem_snapshot "baseline")
+	_MEM_BASE_AVAIL=$(awk '{print $1}' <<<"$v")
+	_MEM_BASE_SLAB=$(awk '{print $2}' <<<"$v")
+	_MEM_PREV_AVAIL=$_MEM_BASE_AVAIL
+	_MEM_PREV_SLAB=$_MEM_BASE_SLAB
+	ok "CHECK_MEM baseline MemAvailable=$((_MEM_BASE_AVAIL / 1024))MB Slab=$((_MEM_BASE_SLAB / 1024))MB (log $MEM_LOG)"
+}
+
+# Compare to previous snapshot (and baseline). Call after each test when CHECK_MEM=1.
+mem_check_after() {
+	local label=$1
+	local v avail slab sunr kmal
+	local d_avail d_slab d_base_avail d_base_slab leak_count=0 cur mark delta
+	local fail=0
+
+	[[ "${CHECK_MEM:-0}" = 1 ]] || return 0
+
+	v=$(mem_snapshot "after:$label")
+	avail=$(awk '{print $1}' <<<"$v")
+	slab=$(awk '{print $2}' <<<"$v")
+	sunr=$(awk '{print $3}' <<<"$v")
+	kmal=$(awk '{print $4}' <<<"$v")
+
+	d_avail=$((_MEM_PREV_AVAIL - avail))   # positive = Available dropped
+	d_slab=$((slab - _MEM_PREV_SLAB))      # positive = Slab grew
+	d_base_avail=$((_MEM_BASE_AVAIL - avail))
+	d_base_slab=$((slab - _MEM_BASE_SLAB))
+
+	log "mem[$label]: Avail $((_MEM_PREV_AVAIL / 1024))→$((avail / 1024))MB (Δ=$((-d_avail / 1024))MB)  Slab $((_MEM_PREV_SLAB / 1024))→$((slab / 1024))MB (Δ=$((d_slab / 1024))MB)  vs baseline AvailΔ=$((-d_base_avail / 1024))MB SlabΔ=$((d_base_slab / 1024))MB"
+
+	# dmesg kmemleak / explicit leak strings since mark (do not advance mark — oops check owns that)
+	mark=$(cat "$LOGDIR/dmesg.mark" 2>/dev/null || echo 0)
+	cur=$(dmesg | wc -l)
+	delta=$((cur - mark))
+	if [[ "$delta" -gt 0 ]]; then
+		leak_count=$(dmesg | tail -n "$delta" | grep -ciE 'kmemleak|memory leak|memleak' || true)
+	fi
+	if [[ "${leak_count:-0}" -gt 0 ]]; then
+		log "FAIL: dmesg reports $leak_count new kmemleak/memory-leak line(s) after $label"
+		dmesg | tail -n "$delta" | grep -iE 'kmemleak|memory leak|memleak' | tail -10 | \
+			while read -r line; do log "  $line"; done
+		fail=1
+	fi
+
+	if [[ "$d_avail" -gt $((MEM_GROW_MB * 1024)) ]]; then
+		log "WARN: MemAvailable dropped $((d_avail / 1024))MB after $label (threshold ${MEM_GROW_MB}MB)"
+		[[ "${MEM_FAIL:-0}" = 1 ]] && fail=1
+	fi
+	if [[ "$d_slab" -gt $((MEM_GROW_MB * 1024)) ]]; then
+		log "WARN: Slab grew $((d_slab / 1024))MB after $label (threshold ${MEM_GROW_MB}MB)"
+		[[ "${MEM_FAIL:-0}" = 1 ]] && fail=1
+	fi
+
+	_MEM_PREV_AVAIL=$avail
+	_MEM_PREV_SLAB=$slab
+
+	if [[ "$fail" -eq 1 ]]; then
+		die "CHECK_MEM failed after $label (see $MEM_LOG)"
+	fi
+	ok "mem check after $label"
+}
+
+
 : "${IPERF_PORTS:=5201 5202 5203 5204 5205 5206 5207 5208 5209 5210 5211 5212 5213 5214 5215 5216}"
 # Space-separated PIDs of iperf3 -s we started (do not killall — may kill user clients).
 : "${IPERF_SERVER_PIDS:=}"
