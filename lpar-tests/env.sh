@@ -106,15 +106,22 @@ max_rx() {
 }
 
 count_rx_stat_rows() {
-	ethtool -S "$IFACE" 2>/dev/null | grep -cE '^[[:space:]]*rx[0-9]+_packets:' || echo 0
+	local n
+	n=$(ethtool -S "$IFACE" 2>/dev/null | grep -cE '^[[:space:]]*rx[0-9]+_packets:') || true
+	echo "${n:-0}"
 }
 
 count_tx_stat_rows() {
-	ethtool -S "$IFACE" 2>/dev/null | grep -cE '^[[:space:]]*tx[0-9]+_packets:' || echo 0
+	local n
+	n=$(ethtool -S "$IFACE" 2>/dev/null | grep -cE '^[[:space:]]*tx[0-9]+_packets:') || true
+	echo "${n:-0}"
 }
 
 count_iface_irqs() {
-	grep -c "${IFACE}" /proc/interrupts 2>/dev/null || echo 0
+	# grep -c exits 1 when count is 0 — must not also echo 0 (would print "0\n0").
+	local n
+	n=$(grep -c "${IFACE}" /proc/interrupts 2>/dev/null) || true
+	echo "${n:-0}"
 }
 
 stat_val() {
@@ -403,7 +410,8 @@ start_iperf_servers() {
 		fi
 	done
 	sleep 1
-	n=$(ss -ltnp 2>/dev/null | grep -c iperf3 || echo 0)
+	n=$(ss -ltnp 2>/dev/null | grep -c iperf3) || true
+	n=${n:-0}
 	[[ "$n" -ge 1 ]] || die "no iperf3 listeners after start"
 	ok "iperf3 servers: $n listener(s) on DUT ($IPERF3)"
 	ss -ltnp 2>/dev/null | grep iperf3 | head -5 | while read -r line; do log "  $line"; done

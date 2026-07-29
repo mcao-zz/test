@@ -32,7 +32,8 @@ if ! ethtool -S "$IFACE" >"$LOGDIR/t10-stats-down.txt" 2>"$LOGDIR/t10-stats-down
 	die "ethtool -S failed while DOWN (see $LOGDIR/t10-stats-down.err)"
 fi
 # Rows may still reflect last published geometry while adapter alive
-rows_down=$(grep -cE '^[[:space:]]*rx[0-9]+_packets:' "$LOGDIR/t10-stats-down.txt" || echo 0)
+rows_down=$(grep -cE '^[[:space:]]*rx[0-9]+_packets:' "$LOGDIR/t10-stats-down.txt") || true
+rows_down=${rows_down:-0}
 [[ "$rows_down" -ge 1 ]] || die "DOWN: no rx*_packets rows (corrupt/empty stats)"
 ok "ethtool -S readable while DOWN (rx*_packets rows=$rows_down)"
 
