@@ -44,16 +44,44 @@ sum_ethtool_tx_packets() {
 	'
 }
 
-# ip -s link: first number after "RX:" line is packets
+# ip -s link (iproute2): after "RX:" / "TX:" header, columns are
+#   bytes packets errors ...  — packets is $2, not $1 (bytes).
+# Older style: "RX packets:N errors:..."
 ip_link_rx_packets() {
 	ip -s link show "$IFACE" 2>/dev/null | awk '
-		/RX:/{ getline; print $1+0; exit }
+		/RX packets:/ {
+			for (i = 1; i <= NF; i++) {
+				if ($i ~ /^packets:/) {
+					split($i, a, ":")
+					print a[2] + 0
+					exit
+				}
+			}
+		}
+		/^[ \t]*RX:/ {
+			getline
+			print $2 + 0
+			exit
+		}
 	'
 }
 
 ip_link_tx_packets() {
 	ip -s link show "$IFACE" 2>/dev/null | awk '
-		/TX:/{ getline; print $1+0; exit }
+		/TX packets:/ {
+			for (i = 1; i <= NF; i++) {
+				if ($i ~ /^packets:/) {
+					split($i, a, ":")
+					print a[2] + 0
+					exit
+				}
+			}
+		}
+		/^[ \t]*TX:/ {
+			getline
+			print $2 + 0
+			exit
+		}
 	'
 }
 
