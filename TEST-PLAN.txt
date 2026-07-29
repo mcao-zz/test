@@ -1,10 +1,10 @@
 ibmveth MQ RX v4 — LPAR validation plan
 ========================================
-Series: veth-mq-upstream-netnext-v4-review (14 patches, base 805185b7c7a1)
-Tip (update when tip moves): a8dfd6177669
+Series: veth-mq-upstream-netnext-v4-review (15 patches, base 805185b7c7a1)
+Tip (update when tip moves): 7fc556ffa0f6
 Focus: open order, close under traffic, ethtool -L, poll hangs, SQ regression,
        plus v4-specific review fixes (IRQ ownership, down-state stash, stats,
-       P14 correlator/shutdown)
+       P14 correlator/shutdown), plus P15 RSS hash (ethtool -x/-X)
 
 Repo: git@github.com:mcao-zz/test.git  branch veth-mq-tests
 Lab monoliths: verify-mq-adapter.sh, test-veth-mq.sh, rx_queue_size.sh
@@ -40,6 +40,8 @@ v4 deltas to validate (beyond v3 plan)
 * set_channels TX+RX while up/down (P12/P13 wiring)
 * queue0 IRQ ownership remains with netdev->irq; only subordinate virqs are
   created/disposed across MQ register/resize/close paths
+* P15: ethtool -x/-X expose PHYP MQ hash algo (crc32↔Murmur, xor↔Additive);
+  key and indirection stay hypervisor-managed (-EOPNOTSUPP); non-MQ FW rejects
 
 Prerequisites
 -------------
@@ -66,6 +68,7 @@ Quick map: risk → test
 | IRQ geometry after resize/close/open       | T14, T18     |
 | set_channels TX with RX                    | T19          |
 | Module reload restores MQ                  | T20          |
+| RSS hash algo get/set (P15)                | T21          |
 
 Pass criteria (global)
 ----------------------
@@ -219,6 +222,19 @@ T20 — Module reload restores MQ
   Pass: open complete; hcall_reg_lan_queue > 0 if rx>1; no stuck NAPI;
         MQ geometry can be restored after reload
 
+T21 — RSS hash algorithm (P15)
+  On MQ FW (max_rx >= 2):
+    ethtool -x $IFACE → shows RSS hash function crc32 or xor
+    ethtool -X $IFACE hfunc crc32; ethtool -x verifies
+    ethtool -X $IFACE hfunc xor;   ethtool -x verifies
+    (FW may support only one; at least one set must succeed)
+    ethtool -X equal N / hkey … → rejected (hypervisor-managed)
+    ethtool -X hfunc toeplitz → rejected
+    ping OK after switches; RX geometry unchanged
+  On non-MQ FW (max_rx == 1): ethtool -x/-X → -EOPNOTSUPP
+  Script: sudo IFACE=$IFACE PEER=$PEER ./t21-rss-hfunc.sh
+  Pass: get/set round-trip for supported aliases; rejects stick
+
 --------------------------------------------------------------------
 Suggested order
 --------------------------------------------------------------------
@@ -226,21 +242,24 @@ Suggested order
 2. Automated resize: T14 (rx_queue_size.sh)
 3. Core: T5, T7, T9 / T15
 4. v4 stash / IRQ: T8, T17, T18, T16
-5. Hard: T10, T11
-6. SQ regression: T2, T6
-7. Optional: T4, T13, T19, T20
+5. P15 RSS: T21
+6. Hard: T10, T11
+7. SQ regression: T2, T6
+8. Optional: T4, T13, T19, T20
 
 What test-veth-mq.sh already covers
 ----------------------------------
 Smoke subset of T3/T7/T9/T20-ish (scale, under-load ping, single queue,
 module reload, hcall_reg_lan_queue). It does NOT replace T10/T11 long
-stress, T8/T17 stash checks, or T15 multi-iperf RX distribution.
+stress, T8/T17 stash checks, T15 multi-iperf RX distribution, or T21
+RSS hfunc get/set.
 
 --------------------------------------------------------------------
 Artifacts on failure
 --------------------------------------------------------------------
 * dmesg -T | tee dmesg-FAIL.txt
 * ethtool -l / -S / -i $IFACE
+* ethtool -x $IFACE
 * grep $IFACE /proc/interrupts
 * /tmp/ibmveth-rx-cycle-* / /tmp/ibmveth-mq-test-results/
 * uname -r; git -C linux rev-parse HEAD; git -C scripts rev-parse HEAD
@@ -260,9 +279,10 @@ Auto harness (preferred for new tests):
   lpar-tests/t16-hcall-deltas.sh — T16 hcall_* counters
   lpar-tests/t19-set-channels.sh — D13/T19 set_channels (+ TX_SET)
   lpar-tests/t20-reload-restore-mq.sh — T20 module reload restores MQ
+  lpar-tests/t21-rss-hfunc.sh    — T21/P15 RSS hash ethtool -x/-X
   lpar-tests/lab-smoke.sh        — wraps verify (+ optional test-veth-mq)
 
-Deep-dive by commit message: TEST-PLAN-DEEP-DIVE.txt (D01–D14)
+Deep-dive by commit message: TEST-PLAN-DEEP-DIVE.txt (D01–D15)
   lpar-tests/close-under-load.sh
   lpar-tests/ethtool-L-cycle.sh
   lpar-tests/parallel-stress.sh  — error Δ + ping_recover artifacts

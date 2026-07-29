@@ -6,13 +6,14 @@ Update this when the kernel tip or patch count changes.
 |-------|-------|
 | Driver series | ibmveth MQ RX v4 |
 | Kernel branch | `veth-mq-upstream-netnext-v4-review` |
-| Patch count | 14 (base `805185b7c7a1`) |
-| Tip subject | ibmveth: Fix MQ RX poll and shutdown hangs after queue resize |
-| Kernel tree tip | `a8dfd6177669bc899fee096eacfc50beb36da310` |
+| Patch count | 15 (base `805185b7c7a1`) |
+| Tip subject | ibmveth: Add RSS hash algorithm configuration support |
+| Kernel tree tip | `7fc556ffa0f615692b89d0dd01d35a8127db48d9` |
 | Kernel remote | `git@github.com:mcao-zz/linux.git` |
 | PHYP notes | Open enable↔post either OK (drops if early enable). Close free-lan vs free_irq either OK once masked. |
 | v4 open | MQ: replenish then unmask. SQ: classic kick (poll posts then enable). |
 | v4 close | mask + napi_disable + free_irq, then free_lan (v3 tip order) |
+| P15 RSS | `ethtool -x` / `-X hfunc crc32|xor` via H_VIOCTL ILLAN_MULTIQUEUE_HASH; key/indir hypervisor-managed |
 
 ## History of plan revisions
 
@@ -23,3 +24,4 @@ Update this when the kernel tip or patch count changes.
 | 2026-07-27 | Tip `a8dfd6177669`: qstats define move; IRQ ownership (leave queue_irq[0], open dispose unwind); P13 message why down-state RX is stashed |
 | 2026-07-27 | TEST-PLAN on veth-mq-tests: added T14–T20 for v4 (geometry, stash, hcall deltas, set_channels, reload) |
 | 2026-07-27 | Test plan sharpened after re-review: queue0 IRQ ownership/reopen checks, stats visibility semantics vs current geometry, explicit P14 invalid-buffer recovery expectations, stronger down-state stash and TX verification notes |
+| 2026-07-29 | Tip `7fc556ffa0f6` P15 RSS hash algorithm (ethtool -x/-X); T21 `t21-rss-hfunc.sh` |

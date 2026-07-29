@@ -192,7 +192,7 @@ counts. Prefer console or an alternate management path.
 
 ## Validation plan
 
-See **[TEST-PLAN.txt](TEST-PLAN.txt)** for T1–T20 and
+See **[TEST-PLAN.txt](TEST-PLAN.txt)** for T1–T21 and
 **[TEST-PLAN-DEEP-DIVE.txt](TEST-PLAN-DEEP-DIVE.txt)** for per-patch D*
 cases derived from each commit message.
 
@@ -219,8 +219,8 @@ sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
 `run-all.sh` phases:
 
 1. **Quiet** — lab-smoke, smoke, t12, **t10 stats-lifetime**, **t11 debugfs
-   geometry**, t8, **t17 down-no-live-irqs**, t19, t16, **t20 reload-MQ**,
-   SQ close / -L with `IPERF=0`
+   geometry**, t8, **t17 down-no-live-irqs**, t19, **t21 RSS hfunc**, t16,
+   **t20 reload-MQ**, SQ close / -L with `IPERF=0`
 2. **Iperf + MQ RX proof** — start `iperf3 -s`, wait for `yes`, require bulk
    `rx*_packets` Δ ≥ `MIN_RX_DELTA` and ≥ `MIN_ACTIVE_RX_QUEUES` queues active
    at `MQ_PROOF_RX` (rejects ping-sized noise)
@@ -246,6 +246,7 @@ sudo IFACE=env9 PEER=192.168.100.2 ./t8-down-stash.sh
 sudo IFACE=env9 PEER=192.168.100.2 ./t17-down-no-live-irqs.sh
 sudo IFACE=env9 PEER=192.168.100.2 ./t19-set-channels.sh
 sudo IFACE=env9 PEER=192.168.100.2 TX_SET=2 ./t19-set-channels.sh
+sudo IFACE=env9 PEER=192.168.100.2 ./t21-rss-hfunc.sh
 sudo IFACE=env9 PEER=192.168.100.2 ./t20-reload-restore-mq.sh
 sudo IFACE=env9 PEER=192.168.100.2 ./t16-hcall-deltas.sh
 sudo IFACE=env9 PEER=192.168.100.2 LAB_FULL=1 ./lab-smoke.sh

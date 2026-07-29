@@ -129,6 +129,24 @@ current_tx() {
 	'
 }
 
+# Parse active RSS hash function from `ethtool -x` (P15 aliases: crc32|xor).
+# Prints one of: crc32, xor, toeplitz, or empty if unparseable.
+current_rss_hfunc() {
+	ethtool -x "$IFACE" 2>/dev/null | awk '
+		BEGIN { IGNORECASE = 1 }
+		/RSS hash function:/ { inhf = 1; next }
+		inhf && /^[[:space:]]*$/ { exit }
+		inhf && /:/ {
+			name = $1
+			sub(/:$/, "", name)
+			on = 0
+			if ($0 ~ /\yon\y/) on = 1
+			if ($NF == "on" || $NF == "1") on = 1
+			if (on) { print name; exit }
+		}
+	'
+}
+
 # Fail unless published RX / -S rows / IRQ lines all match N
 assert_rx_geometry() {
 	local n=$1

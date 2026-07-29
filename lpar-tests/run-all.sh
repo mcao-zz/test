@@ -1,7 +1,7 @@
 #!/bin/bash
 # Ordered suite matching the preferred lab flow:
 #
-#   1) Quiet: smoke, t8, t12, t19, t16
+#   1) Quiet: smoke, t8, t12, t19, t21, t16
 #   2) Interactive: start DUT iperf servers, prompt for lp7 clients,
 #      prove bulk inbound + MQ RX spread under load
 #   3) Heavy: re-prove MQ RX, t14, re-prove, close/parallel/-L with
@@ -14,6 +14,7 @@
 #   SKIP_QUIET=1 ...          # heavy only (still prompts for iperf)
 #   NONINTERACTIVE=1 ...      # no prompts; inbound must already be flowing
 #   SKIP_PARALLEL=1 ...       # skip hang-hunt stress
+#   SKIP_RSS=1 ...            # skip T21 RSS hfunc
 #   MIN_RX_DELTA=10000 MIN_ACTIVE_RX_QUEUES=2 MQ_PROOF_RX=8 ...
 #
 set -euo pipefail
@@ -55,6 +56,7 @@ if [[ "${SKIP_QUIET:-0}" != 1 ]]; then
 	[[ "${SKIP_STASH:-0}" = 1 ]] || run t8-stash "$DIR/t8-down-stash.sh"
 	[[ "${SKIP_T17:-0}" = 1 ]] || run t17-down-irqs "$DIR/t17-down-no-live-irqs.sh"
 	[[ "${SKIP_CHANNELS:-0}" = 1 ]] || run t19-channels "$DIR/t19-set-channels.sh"
+	[[ "${SKIP_RSS:-0}" = 1 ]] || run t21-rss "$DIR/t21-rss-hfunc.sh"
 	[[ "${SKIP_HCALL:-0}" = 1 ]] || run t16-hcall "$DIR/t16-hcall-deltas.sh"
 	[[ "${SKIP_T20:-0}" = 1 ]] || run t20-reload "$DIR/t20-reload-restore-mq.sh"
 	# Quiet extras: no auto-outbound iperf (that hid the lp7 inbound gate)

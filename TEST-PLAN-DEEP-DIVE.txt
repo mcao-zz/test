@@ -1,8 +1,8 @@
 ibmveth MQ v4 — Deep-dive test plan by patch
 ============================================
-Tip: a8dfd6177669 (14 patches after 805185b7c7a1)
+Tip: 7fc556ffa0f6 (15 patches after 805185b7c7a1)
 Branch: veth-mq-upstream-netnext-v4-review
-Companion: TEST-PLAN.txt (T1–T20), lpar-tests/
+Companion: TEST-PLAN.txt (T1–T21), lpar-tests/
 
 How to use
 ----------
@@ -175,14 +175,27 @@ P14 — Fix MQ RX poll and shutdown hangs after queue resize
                  outcome is invalid-buffer accounting/recovery, not crash.
   Auto: parallel-stress.sh, t14 under load
 
+P15 — Add RSS hash algorithm configuration support
+  Claims: get_rxfh/set_rxfh via H_VIOCTL ILLAN_MULTIQUEUE_HASH;
+          Murmur↔crc32 and Additive↔xor ethtool aliases; key_size and
+          indir_size 0 (hypervisor-managed); -EOPNOTSUPP without
+          multi_queue; reject key/indir/unsupported hfunc.
+  Deep dive:
+    D15-get      ethtool -x shows crc32 or xor when MQ FW.
+    D15-set      ethtool -X hfunc crc32|xor round-trip; ping OK;
+                 FW may support only one alias — at least one set OK.
+    D15-reject   -X equal / hkey / hfunc toeplitz rejected.
+    D15-nomq     on non-MQ FW: -x/-X → Operation not supported (T13 lab).
+  Auto: t21-rss-hfunc.sh
+
 --------------------------------------------------------------------
 Suggested deep-dive matrix (tip, one LPAR day)
 --------------------------------------------------------------------
-Morning smoke:     lab-smoke + smoke + t8 + t16 + t14
+Morning smoke:     lab-smoke + smoke + t8 + t16 + t14 + t21
 Under RX iperf:    T15 + t14 + t16 deltas
 Close stress:      close-under-load RX=1 and RX=8
 Hang hunt:         parallel-stress 10–15 min
-Diagnostics:       debugfs buffer_pools + ethtool -S names
+Diagnostics:       debugfs buffer_pools + ethtool -S names + ethtool -x
 Legacy (if avail): T13
 
 --------------------------------------------------------------------
@@ -195,6 +208,8 @@ P10: Probe-lifetime qstats — D10-lifetime matters for ifdown races.
 P11: Clear sysfs vs debugfs split — D11 both surfaces.
 P12/P13: Resize vs stash split matches T14 vs T8.
 P14: Hang scenario well stated — T10/T11 are the proof.
+P15: Alias disclaimer (crc32/xor ≠ real Murmur/Additive) — document in
+     T21 logs; reject paths are as important as the happy set.
 
 Gaps vs messages (still MANUAL / future scripts):
   * H_FUNCTION hard fail (P09)
@@ -203,3 +218,5 @@ Gaps vs messages (still MANUAL / future scripts):
     (P10) — stronger automated negative/consistency test still useful
   * queue0 IRQ ownership / reopen failure signature capture (P09/P12/P14)
   * napi_complete_done budget path (P14) — needs tracing
+  * RSS under multi-flow: prove queue spread still OK after hfunc switch
+    (optional extension of T21 / T15)
