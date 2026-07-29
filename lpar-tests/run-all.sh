@@ -1,6 +1,7 @@
 #!/bin/bash
 # Ordered suite matching the preferred lab flow:
 #
+#   0) Optional: reload ibmveth with dyndbg=+p (DYNDBG=1, default)
 #   1) Quiet: smoke, t8, t12, t19, t21, t16
 #   2) Interactive: start DUT iperf servers, prompt for lp7 clients,
 #      prove bulk inbound + MQ RX spread under load
@@ -10,11 +11,14 @@
 #
 # Usage:
 #   IFACE=env9 PEER=192.168.100.2 sudo ./run-all.sh
+#   DYNDBG=1 ...              # default: reload with dyndbg=+p before tests
+#   DYNDBG=0 ...              # skip initial debug reload
 #   SKIP_HEAVY=1 ...          # quiet only
 #   SKIP_QUIET=1 ...          # heavy only (still prompts for iperf)
 #   NONINTERACTIVE=1 ...      # no prompts; inbound must already be flowing
 #   SKIP_PARALLEL=1 ...       # skip hang-hunt stress
 #   SKIP_RSS=1 ...            # skip T21 RSS hfunc
+#   LAB_FULL=1 ...            # also run ../test-veth-mq.sh from lab-smoke
 #   MIN_RX_DELTA=10000 MIN_ACTIVE_RX_QUEUES=2 MQ_PROOF_RX=8 ...
 #
 set -euo pipefail
@@ -22,11 +26,13 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=env.sh
 . "$DIR/env.sh"
 
+: "${DYNDBG:=1}"
+
 need_root
 need_peer
 
 log "Logs under $LOGDIR"
-log "IFACE=$IFACE PEER=$PEER ROOT=$ROOT"
+log "IFACE=$IFACE PEER=$PEER ROOT=$ROOT DYNDBG=$DYNDBG"
 log "MQ proof: MIN_RX_DELTA=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s, MIN_ACTIVE_RX_QUEUES=$MIN_ACTIVE_RX_QUEUES, MQ_PROOF_RX=$MQ_PROOF_RX"
 log "See $ROOT/TEST-PLAN.txt / TEST-PLAN-DEEP-DIVE.txt"
 
@@ -42,6 +48,19 @@ cleanup() {
 	stop_iperf_servers
 }
 trap cleanup EXIT
+
+# ------------------------------------------------------------------
+# Phase 0 — Debug module load (dyndbg=+p) before any tests
+# ------------------------------------------------------------------
+if [[ "$DYNDBG" = 1 ]]; then
+	log "========== PHASE 0: DYNDBG MODULE LOAD =========="
+	run dyndbg-load ensure_ibmveth_dyndbg
+	# Avoid a second reload in lab-smoke (verify -D); keep verbose checks.
+	export VERIFY_RELOAD=0
+else
+	log "DYNDBG=0 — skipping initial dyndbg reload (lab-smoke may still -D)"
+	export VERIFY_RELOAD="${VERIFY_RELOAD:-1}"
+fi
 
 # ------------------------------------------------------------------
 # Phase 1 — Quiet (no heavy inbound required)

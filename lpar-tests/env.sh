@@ -333,6 +333,34 @@ save_iface_ipv4() {
 	ip -4 -o addr show dev "$IFACE" 2>/dev/null | awk '{print $4}' | head -1
 }
 
+# Reload ibmveth with dyndbg=+p; save/restore IPv4 on $IFACE.
+# Sets IBMVETH_DYNDBG=1 on success.
+ensure_ibmveth_dyndbg() {
+	local saved_ip
+
+	need_root
+	log "=== ensure ibmveth dyndbg=+p (IFACE=$IFACE) ==="
+	saved_ip=$(save_iface_ipv4)
+	log "saved IPv4: ${saved_ip:-none}"
+
+	iface_up 2>/dev/null || true
+	iface_down 2>/dev/null || true
+	sleep 1
+	rmmod ibmveth 2>/dev/null || log "WARN: rmmod ibmveth (may already be unloaded)"
+	sleep 2
+	modprobe ibmveth dyndbg=+p || die "modprobe ibmveth dyndbg=+p failed"
+	sleep 3
+
+	ip link show "$IFACE" >/dev/null || die "netdev $IFACE missing after dyndbg reload"
+	iface_up
+	restore_iface_ipv4 "$saved_ip"
+	sleep 2
+	IBMVETH_DYNDBG=1
+	export IBMVETH_DYNDBG
+	ok "ibmveth loaded with dyndbg=+p"
+	[[ -n "${PEER:-}" ]] && ping_ok || true
+}
+
 restore_iface_ipv4() {
 	local cidr=$1
 	[[ -n "$cidr" ]] || return 0

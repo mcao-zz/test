@@ -218,9 +218,12 @@ sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
 
 `run-all.sh` phases:
 
-1. **Quiet** — lab-smoke, smoke, t12, **t10 stats-lifetime**, **t11 debugfs
-   geometry**, t8, **t17 down-no-live-irqs**, t19, **t21 RSS hfunc**, t16,
-   **t20 reload-MQ**, SQ close / -L with `IPERF=0`
+0. **Dyndbg load** (`DYNDBG=1`, default) — `modprobe ibmveth dyndbg=+p`
+   before any tests; saves/restores `$IFACE` IPv4
+1. **Quiet** — lab-smoke (verify `-v`; skip second `-D` reload when phase 0
+   ran), smoke, t12, **t10 stats-lifetime**, **t11 debugfs geometry**, t8,
+   **t17 down-no-live-irqs**, t19, **t21 RSS hfunc**, t16, **t20 reload-MQ**
+   (reload again with dyndbg), SQ close / -L with `IPERF=0`
 2. **Iperf + MQ RX proof** — start `iperf3 -s`, wait for `yes`, require bulk
    `rx*_packets` Δ ≥ `MIN_RX_DELTA` and ≥ `MIN_ACTIVE_RX_QUEUES` queues active
    at `MQ_PROOF_RX` (rejects ping-sized noise)
@@ -229,6 +232,10 @@ sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
 4. **Cleanup** — stop only iperf servers this run started; final ping
 
 ```bash
+sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
+sudo IFACE=env9 PEER=192.168.100.2 DYNDBG=1 ./run-all.sh          # default
+sudo IFACE=env9 PEER=192.168.100.2 DYNDBG=0 ./run-all.sh          # no phase-0 reload
+sudo IFACE=env9 PEER=192.168.100.2 LAB_FULL=1 ./run-all.sh        # + test-veth-mq.sh
 sudo IFACE=env9 PEER=192.168.100.2 SKIP_HEAVY=1 ./run-all.sh
 sudo IFACE=env9 PEER=192.168.100.2 SKIP_QUIET=1 ./run-all.sh
 sudo IFACE=env9 PEER=192.168.100.2 NONINTERACTIVE=1 ./run-all.sh
