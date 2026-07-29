@@ -24,7 +24,8 @@
 #   SKIP_RSS_RX=1 ...         # skip heavy T21 under-traffic hash switch
 #   LAB_FULL=1 ...            # also run ../test-veth-mq.sh from lab-smoke
 #   SIMPLE_IPERF=1 ...        # one-port long iperf; soft Δ; no multi-queue spread demand
-#   CHECK_HEALTH=1 ...        # after each test: mem + softnet + IRQ + dmesg WARN/kmemleak
+#   CHECK_HEALTH=1 ...        # default ON: after each test + end summary (mem/softnet/IRQ/dmesg)
+#   CHECK_HEALTH=0 ...        # disable health checks
 #   HEALTH_FAIL=1 MEM_GROW_MB=64 HEALTH_UNLOAD=1
 #   MIN_RX_DELTA=10000 MIN_ACTIVE_RX_QUEUES=2 MQ_PROOF_RX=8 ...
 #
@@ -71,13 +72,16 @@ _HAD_CLI_MIN_ACTIVE_RX_QUEUES=${MIN_ACTIVE_RX_QUEUES+1}
 : "${DYNDBG:=1}"
 : "${SIMPLE_IPERF:=0}"
 : "${EXTERNAL_IPERF:=0}"
-: "${CHECK_HEALTH:=0}"
+: "${CHECK_HEALTH:=1}"
 : "${CHECK_MEM:=0}"
-# CHECK_MEM is an alias for CHECK_HEALTH
+# CHECK_MEM is an alias for CHECK_HEALTH; CHECK_HEALTH=0 wins if set explicitly after
 if [[ "$CHECK_MEM" = 1 ]]; then
 	CHECK_HEALTH=1
 fi
 export CHECK_HEALTH
+if [[ "$CHECK_HEALTH" = 1 ]]; then
+	log "CHECK_HEALTH=1 — per-test + end-of-suite (mem/softnet/IRQ/dmesg); CHECK_HEALTH=0 to disable"
+fi
 
 # Lab already runs long-lived iperf server+client — do not manage iperf.
 # Soft thresholds: env.sh sets MIN_RX_DELTA=10000; override unless CLI set them.
@@ -257,6 +261,7 @@ stop_iperf_servers
 ping_ok
 check_no_lockup
 health_check_after "suite-end"
+health_summary
 health_unload_probe
 [[ "${CHECK_HEALTH:-0}" = 1 ]] && log "Health log: $LOGDIR/health-check.log"
 

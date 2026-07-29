@@ -439,11 +439,11 @@ check_no_oops() {
 	rm -f "$f"
 }
 
-# Optional driver-update health (CHECK_HEALTH=1). Includes memory.
-# After each test: MemAvailable/Slab Δ, dmesg kmemleak/WARN, softnet drops,
-# IRQ count vs RX geometry. HEALTH_FAIL=1 makes growth/WARN fatal (default warn).
-# CHECK_MEM=1 is an alias for CHECK_HEALTH=1.
-: "${CHECK_HEALTH:=0}"
+# Optional driver-update health (CHECK_HEALTH=1 by default in run-all).
+# After each test + suite-end summary: MemAvailable/Slab Δ, dmesg kmemleak/WARN,
+# softnet drops, IRQ vs RX geometry. HEALTH_FAIL=1 makes growth/WARN fatal.
+# CHECK_MEM=1 is an alias for CHECK_HEALTH=1; CHECK_HEALTH=0 disables.
+: "${CHECK_HEALTH:=1}"
 : "${CHECK_MEM:=0}"
 : "${MEM_GROW_MB:=64}"            # MemAvailable drop / Slab rise warn threshold (MB)
 : "${HEALTH_FAIL:=0}"
@@ -629,7 +629,38 @@ health_check_after() {
 # Backward-compatible alias.
 mem_check_after() { health_check_after "$@"; }
 
-# End-of-suite: try a clean unload/reload probe only if IBMVETH_KO or HEALTH_UNLOAD=1.
+# End-of-suite summary vs baseline (always when CHECK_HEALTH on).
+health_summary() {
+	local avail slab soft soft_d soft_t base_d base_t dd dt irqs
+
+	_health_enabled || return 0
+	avail=$(_mem_read_kb MemAvailable)
+	slab=$(_mem_read_kb Slab)
+	avail=${avail:-0}; slab=${slab:-0}
+	soft=$(_softnet_totals)
+	soft_d=$(awk '{print $1}' <<<"$soft")
+	soft_t=$(awk '{print $2}' <<<"$soft")
+	base_d=$(awk '{print $1}' <<<"${_SOFTNET_BASE:-0 0}")
+	base_t=$(awk '{print $2}' <<<"${_SOFTNET_BASE:-0 0}")
+	dd=$((soft_d - base_d))
+	dt=$((soft_t - base_t))
+	irqs=$(count_iface_irqs 2>/dev/null || echo 0)
+
+	log "========== HEALTH SUMMARY (suite vs baseline) =========="
+	log "  MemAvailable: $((_MEM_BASE_AVAIL / 1024)) → $((avail / 1024)) MB  (Δ=$(( (avail - _MEM_BASE_AVAIL) / 1024 )) MB)"
+	log "  Slab:         $((_MEM_BASE_SLAB / 1024)) → $((slab / 1024)) MB  (Δ=$(( (slab - _MEM_BASE_SLAB) / 1024 )) MB)"
+	log "  softnet:      dropped Δ=$dd  time_squeeze Δ=$dt"
+	log "  irqs now:     $irqs  (baseline $_HEALTH_IRQ_BASE)  rx=$(current_rx 2>/dev/null || echo ?)"
+	log "  detail log:   $HEALTH_LOG"
+	{
+		echo "=== HEALTH SUMMARY $(date '+%F %T') ==="
+		echo "Avail_MB ${_MEM_BASE_AVAIL}->${avail} Slab_MB ${_MEM_BASE_SLAB}->${slab}"
+		echo "softnet_dropped_delta=$dd softnet_squeeze_delta=$dt irqs=$irqs"
+		echo
+	} >>"$HEALTH_LOG"
+}
+
+# End-of-suite: try a clean unload/reload probe only if HEALTH_UNLOAD=1.
 # Skipped by default under EXTERNAL_IPERF (would kill lab traffic).
 health_unload_probe() {
 	local saved_ip
