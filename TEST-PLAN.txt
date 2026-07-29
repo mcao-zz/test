@@ -223,21 +223,20 @@ T20 — Module reload restores MQ
         MQ geometry can be restored after reload
 
 T21 — RSS hash algorithm (P15)
-  On MQ FW (max_rx >= 2):
-    ethtool -x $IFACE → shows RSS hash function crc32 or xor
-      (indir/key "Operation not supported" and toeplitz:off are expected
-       ethtool noise — PHYP-managed key/indir; only crc32|xor aliases)
-    ethtool -X $IFACE hfunc crc32; ethtool -x verifies
-    ethtool -X $IFACE hfunc xor;   ethtool -x verifies
-    (FW may support only one; at least one set must succeed)
-    Fail hard on "Cannot get RX ring count" (missing get_rx_ring_count)
-    ethtool -X equal N / hkey … → rejected (hypervisor-managed)
-    ethtool -X hfunc toeplitz → rejected
-    ping OK after switches; RX geometry unchanged
+  Quiet (default):
+    ethtool -x/-X get/set crc32|xor; reject key/indir/toeplitz; ping
+  Under traffic (UNDER_RX=1, also in run-all heavy after inbound gate):
+    With lp7 multi-flow RX alive at RX=8:
+      prove MQ spread → switch hfunc (crc32↔xor) → error Δ bounded →
+      prove MQ spread again → restore → prove again
+      Log per-queue Δ before/after (PHYP owns indir — pattern change is
+      soft evidence of hasher effect, not a hard remapping assert)
+    Fail hard on "Cannot get RX ring count" or error storm / lost MQ spread
   On non-MQ FW (max_rx == 1): ethtool -x/-X → -EOPNOTSUPP
-  Script: sudo IFACE=$IFACE PEER=$PEER ./t21-rss-hfunc.sh
-  Pass: get/set round-trip for supported aliases; rejects stick
-  Note: T21 logs an RSS decode summary so raw ethtool -x is less confusing
+  Script:
+    sudo IFACE=$IFACE PEER=$PEER ./t21-rss-hfunc.sh
+    sudo IFACE=$IFACE PEER=$PEER UNDER_RX=1 ./t21-rss-hfunc.sh
+  Pass: quiet get/set/reject; under traffic no drops storm + MQ still spreads
 
 --------------------------------------------------------------------
 Suggested order

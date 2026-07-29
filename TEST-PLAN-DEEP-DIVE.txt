@@ -187,9 +187,12 @@ P15 — Add RSS hash algorithm configuration support
                  FW may support only one alias — at least one set OK.
                  Fail hard on "Cannot get RX ring count" (missing
                  get_rx_ring_count), do not treat as FW limit.
+    D15-traffic  UNDER_RX=1: switch hfunc under multi-flow RX; error Δ
+                 bounded; MQ spread still proven; queue Δ before/after
+                 logged (soft — PHYP indir not OS-visible).
     D15-reject   -X equal / hkey / hfunc toeplitz rejected.
     D15-nomq     on non-MQ FW: -x/-X → Operation not supported (T13 lab).
-  Auto: t21-rss-hfunc.sh
+  Auto: t21-rss-hfunc.sh (quiet + heavy UNDER_RX=1)
 
 --------------------------------------------------------------------
 Suggested deep-dive matrix (tip, one LPAR day)

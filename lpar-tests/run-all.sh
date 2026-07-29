@@ -17,7 +17,8 @@
 #   SKIP_QUIET=1 ...          # heavy only (still prompts for iperf)
 #   NONINTERACTIVE=1 ...      # no prompts; inbound must already be flowing
 #   SKIP_PARALLEL=1 ...       # skip hang-hunt stress
-#   SKIP_RSS=1 ...            # skip T21 RSS hfunc
+#   SKIP_RSS=1 ...            # skip quiet T21 RSS hfunc
+#   SKIP_RSS_RX=1 ...         # skip heavy T21 under-traffic hash switch
 #   LAB_FULL=1 ...            # also run ../test-veth-mq.sh from lab-smoke
 #   MIN_RX_DELTA=10000 MIN_ACTIVE_RX_QUEUES=2 MQ_PROOF_RX=8 ...
 #
@@ -104,6 +105,12 @@ if [[ "${SKIP_HEAVY:-0}" != 1 ]]; then
 	# Explicit proof before geometry churn (gate already proved once).
 	[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
 		run mq-rx-pre "$DIR/t-mq-rx-under-load.sh" pre-heavy
+
+	# T21 under traffic: hfunc switch + error Δ + MQ spread (P15)
+	[[ "${SKIP_RSS_RX:-0}" = 1 ]] || \
+		run t21-rss-under-rx env UNDER_RX=1 "$DIR/t21-rss-hfunc.sh"
+	[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
+		run mq-rx-post-t21 "$DIR/t-mq-rx-under-load.sh" post-t21-rss
 
 	# T14 under inbound: each -L step checks error Δ, bulk RX, new-queue traffic
 	[[ "${SKIP_T14:-0}" = 1 ]] || \
