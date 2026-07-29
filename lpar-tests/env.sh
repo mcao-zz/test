@@ -176,11 +176,40 @@ assert_tx_geometry() {
 	fi
 }
 
-# Path to this iface's debugfs buffer_pools (netdev name).
+# Path to this iface's debugfs buffer_pools.
+# Driver creates the dir with netdev->name at probe; udev may later rename
+# (eth0 → env9) and leave /sys/kernel/debug/<oldname>/buffer_pools.
 iface_buffer_pools() {
-	local f="/sys/kernel/debug/${IFACE}/buffer_pools"
-	[[ -r "$f" ]] || return 1
-	echo "$f"
+	local f base c
+	local -a candidates=()
+
+	f="/sys/kernel/debug/${IFACE}/buffer_pools"
+	if [[ -r "$f" ]]; then
+		echo "$f"
+		return 0
+	fi
+
+	mapfile -t candidates < <(
+		find /sys/kernel/debug -mindepth 2 -maxdepth 2 -type f -name buffer_pools 2>/dev/null
+	)
+	[[ ${#candidates[@]} -gt 0 ]] || return 1
+
+	# Prefer a debugfs dir whose basename is not a live netdev (rename leftover).
+	for c in "${candidates[@]}"; do
+		base=$(basename "$(dirname "$c")")
+		if [[ ! -e "/sys/class/net/$base" && -r "$c" ]]; then
+			echo "$c"
+			return 0
+		fi
+	done
+
+	# Single candidate: use it (common single-MQ-adapter lab).
+	if [[ ${#candidates[@]} -eq 1 && -r "${candidates[0]}" ]]; then
+		echo "${candidates[0]}"
+		return 0
+	fi
+
+	return 1
 }
 
 # Count distinct Queue IDs in buffer_pools (skip header/separator).

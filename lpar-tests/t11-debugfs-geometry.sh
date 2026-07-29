@@ -14,8 +14,11 @@ need_root
 save_dmesg_mark
 iface_up
 
-bp=$(iface_buffer_pools) || die "missing /sys/kernel/debug/${IFACE}/buffer_pools (debugfs?)"
+bp=$(iface_buffer_pools) || die "missing buffer_pools under /sys/kernel/debug (IFACE=$IFACE; check find /sys/kernel/debug -name buffer_pools — probe name may differ after udev rename)"
 ok "buffer_pools at $bp"
+if [[ "$bp" != "/sys/kernel/debug/${IFACE}/buffer_pools" ]]; then
+	log "NOTE: debugfs path uses probe-time name (not $IFACE) — OK after udev rename"
+fi
 
 log "=== T11/P11 debugfs geometry on $IFACE ==="
 
