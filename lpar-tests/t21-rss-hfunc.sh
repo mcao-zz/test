@@ -49,7 +49,7 @@ assert_rx_geometry 4
 ethtool -x "$IFACE" >"$LOGDIR/t21-rxfh-before.txt" 2>"$LOGDIR/t21-rxfh-before.err" \
 	|| die "ethtool -x failed on MQ (see $LOGDIR/t21-rxfh-before.err)"
 ok "ethtool -x succeeded"
-cat "$LOGDIR/t21-rxfh-before.txt" | head -40 | while read -r line; do log "  $line"; done
+explain_rss_rxfh "$LOGDIR/t21-rxfh-before.txt" "$LOGDIR/t21-rxfh-before.err"
 
 orig=$(current_rss_hfunc)
 [[ -n "$orig" ]] || die "could not parse RSS hash function from ethtool -x"

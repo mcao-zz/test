@@ -225,15 +225,19 @@ T20 — Module reload restores MQ
 T21 — RSS hash algorithm (P15)
   On MQ FW (max_rx >= 2):
     ethtool -x $IFACE → shows RSS hash function crc32 or xor
+      (indir/key "Operation not supported" and toeplitz:off are expected
+       ethtool noise — PHYP-managed key/indir; only crc32|xor aliases)
     ethtool -X $IFACE hfunc crc32; ethtool -x verifies
     ethtool -X $IFACE hfunc xor;   ethtool -x verifies
     (FW may support only one; at least one set must succeed)
+    Fail hard on "Cannot get RX ring count" (missing get_rx_ring_count)
     ethtool -X equal N / hkey … → rejected (hypervisor-managed)
     ethtool -X hfunc toeplitz → rejected
     ping OK after switches; RX geometry unchanged
   On non-MQ FW (max_rx == 1): ethtool -x/-X → -EOPNOTSUPP
   Script: sudo IFACE=$IFACE PEER=$PEER ./t21-rss-hfunc.sh
   Pass: get/set round-trip for supported aliases; rejects stick
+  Note: T21 logs an RSS decode summary so raw ethtool -x is less confusing
 
 --------------------------------------------------------------------
 Suggested order

@@ -154,6 +154,57 @@ current_rss_hfunc() {
 	'
 }
 
+# Decode noisy `ethtool -x` into a short ibmveth-oriented summary.
+# Ethtool always prints indir/key sections and the full toeplitz/xor/crc32
+# menu; for ibmveth those "Operation not supported" / toeplitz:off lines are
+# expected (PHYP-managed key/indir; only crc32|xor aliases are used).
+explain_rss_rxfh() {
+	local out=${1:-}
+	local err=${2:-}
+	local hfunc rings phyp
+
+	if [[ -z "$out" ]]; then
+		out=$(mktemp)
+		err=$(mktemp)
+		ethtool -x "$IFACE" >"$out" 2>"$err" || true
+	fi
+
+	hfunc=$(awk '
+		BEGIN { IGNORECASE = 1 }
+		/RSS hash function:/ { inhf = 1; next }
+		inhf && /^[[:space:]]*$/ { exit }
+		inhf && /:/ {
+			name = $1
+			sub(/:$/, "", name)
+			if ($0 ~ /\yon\y/ || $NF == "on" || $NF == "1") {
+				print name; exit
+			}
+		}
+	' "$out")
+	rings=$(awk '
+		/[Ww]ith [0-9]+ RX ring/ {
+			for (i = 1; i <= NF; i++)
+				if ($(i) ~ /^[0-9]+$/ && $(i+1) ~ /^RX/) {
+					print $i; exit
+				}
+		}
+	' "$out")
+
+	case "$hfunc" in
+		crc32) phyp="Murmur (ethtool alias crc32)" ;;
+		xor)   phyp="Additive (ethtool alias xor)" ;;
+		*)     phyp="unknown/unset" ;;
+	esac
+
+	log "RSS decode ($IFACE):"
+	log "  active hfunc: ${hfunc:-?} → PHYP $phyp"
+	log "  RX rings reported: ${rings:-?}"
+	log "  indir table / hash key: hypervisor-managed (ethtool prints"
+	log "    'Operation not supported' — expected, not a failure)"
+	log "  toeplitz listed off: ethtool's generic menu; ibmveth only"
+	log "    uses crc32|xor aliases — ignore toeplitz"
+}
+
 # Fail unless published RX / -S rows / IRQ lines all match N
 assert_rx_geometry() {
 	local n=$1
