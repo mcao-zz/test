@@ -11,6 +11,7 @@
 #
 # Usage:
 #   IFACE=env9 PEER=192.168.100.2 sudo ./run-all.sh
+#   IBMVETH_KO=/path/to/ibmveth.ko ...   # or directory containing ibmveth.ko
 #   DYNDBG=1 ...              # default: reload with dyndbg=+p before tests
 #   DYNDBG=0 ...              # skip initial debug reload
 #   SKIP_HEAVY=1 ...          # quiet only
@@ -50,7 +51,7 @@ need_root
 need_peer
 
 log "Logs under $LOGDIR"
-log "IFACE=$IFACE PEER=$PEER ROOT=$ROOT DYNDBG=$DYNDBG SIMPLE_IPERF=$SIMPLE_IPERF"
+log "IFACE=$IFACE PEER=$PEER ROOT=$ROOT DYNDBG=$DYNDBG SIMPLE_IPERF=$SIMPLE_IPERF IBMVETH_KO=${IBMVETH_KO:-modprobe}"
 log "MQ proof: MIN_RX_DELTA=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s, MIN_ACTIVE_RX_QUEUES=$MIN_ACTIVE_RX_QUEUES, MQ_PROOF_RX=$MQ_PROOF_RX"
 log "See $ROOT/TEST-PLAN.txt / TEST-PLAN-DEEP-DIVE.txt"
 

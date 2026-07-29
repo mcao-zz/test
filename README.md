@@ -218,7 +218,8 @@ sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
 
 `run-all.sh` phases:
 
-0. **Dyndbg load** (`DYNDBG=1`, default) — `modprobe ibmveth dyndbg=+p`
+0. **Dyndbg load** (`DYNDBG=1`, default) — reload with `dyndbg=+p`
+   (`modprobe`, or `insmod` when `IBMVETH_KO=` points at a `.ko` / build dir)
    before any tests; saves/restores `$IFACE` IPv4
 1. **Quiet** — lab-smoke (verify `-v`; skip second `-D` reload when phase 0
    ran), smoke, t12, **t10 stats-lifetime**, **t11 debugfs geometry**, t8,
@@ -233,6 +234,7 @@ sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
 
 ```bash
 sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
+sudo IFACE=env9 PEER=192.168.100.2 IBMVETH_KO=/home/ming/ibmveth-build ./run-all.sh
 sudo IFACE=env9 PEER=192.168.100.2 DYNDBG=1 ./run-all.sh          # default
 sudo IFACE=env9 PEER=192.168.100.2 DYNDBG=0 ./run-all.sh          # no phase-0 reload
 sudo IFACE=env9 PEER=192.168.100.2 SIMPLE_IPERF=1 ./run-all.sh    # one-port soft under-load

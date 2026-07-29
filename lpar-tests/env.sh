@@ -9,6 +9,7 @@ export PATH
 : "${PEER:=}"                          # required for ping/iperf tests
 : "${DUT_IP:=}"                        # this LPAR's test IP (optional)
 : "${IPERF3:=}"                        # optional absolute path to iperf3
+: "${IBMVETH_KO:=}"                    # optional path to ibmveth.ko (or its directory)
 : "${IPERF_TIME:=60}"
 : "${IPERF_PARALLEL:=4}"
 : "${CYCLE_SLEEP:=0.5}"
@@ -333,13 +334,50 @@ save_iface_ipv4() {
 	ip -4 -o addr show dev "$IFACE" 2>/dev/null | awk '{print $4}' | head -1
 }
 
+# Resolve IBMVETH_KO to an absolute .ko path (file, or dir containing ibmveth.ko).
+resolve_ibmveth_ko() {
+	local p=${IBMVETH_KO:-}
+
+	[[ -n "$p" ]] || return 1
+	if [[ -d "$p" ]]; then
+		p="$p/ibmveth.ko"
+	fi
+	[[ -f "$p" ]] || die "IBMVETH_KO not found: $IBMVETH_KO (need ibmveth.ko file or directory)"
+	# Absolute path — insmod cwd-independent under sudo.
+	( cd "$(dirname "$p")" && printf '%s/%s\n' "$(pwd -P)" "$(basename "$p")" )
+}
+
+# Load ibmveth: IBMVETH_KO=... uses insmod; otherwise modprobe.
+# Optional arg: dyndbg param string (e.g. +p). Empty = no dyndbg.
+load_ibmveth() {
+	local dyndbg=${1:-}
+	local ko
+
+	if ko=$(resolve_ibmveth_ko); then
+		log "loading ibmveth from IBMVETH_KO=$ko${dyndbg:+ dyndbg=$dyndbg}"
+		if [[ -n "$dyndbg" ]]; then
+			insmod "$ko" "dyndbg=$dyndbg" || die "insmod $ko dyndbg=$dyndbg failed"
+		else
+			insmod "$ko" || die "insmod $ko failed"
+		fi
+	else
+		log "loading ibmveth via modprobe${dyndbg:+ dyndbg=$dyndbg}"
+		if [[ -n "$dyndbg" ]]; then
+			modprobe ibmveth "dyndbg=$dyndbg" || die "modprobe ibmveth dyndbg=$dyndbg failed"
+		else
+			modprobe ibmveth || die "modprobe ibmveth failed"
+		fi
+	fi
+}
+
 # Reload ibmveth with dyndbg=+p; save/restore IPv4 on $IFACE.
 # Sets IBMVETH_DYNDBG=1 on success.
+# Override module: IBMVETH_KO=/path/to/ibmveth.ko (or directory containing it).
 ensure_ibmveth_dyndbg() {
 	local saved_ip
 
 	need_root
-	log "=== ensure ibmveth dyndbg=+p (IFACE=$IFACE) ==="
+	log "=== ensure ibmveth dyndbg=+p (IFACE=$IFACE IBMVETH_KO=${IBMVETH_KO:-modprobe}) ==="
 	saved_ip=$(save_iface_ipv4)
 	log "saved IPv4: ${saved_ip:-none}"
 
@@ -348,7 +386,7 @@ ensure_ibmveth_dyndbg() {
 	sleep 1
 	rmmod ibmveth 2>/dev/null || log "WARN: rmmod ibmveth (may already be unloaded)"
 	sleep 2
-	modprobe ibmveth dyndbg=+p || die "modprobe ibmveth dyndbg=+p failed"
+	load_ibmveth "+p"
 	sleep 3
 
 	ip link show "$IFACE" >/dev/null || die "netdev $IFACE missing after dyndbg reload"
@@ -357,7 +395,7 @@ ensure_ibmveth_dyndbg() {
 	sleep 2
 	IBMVETH_DYNDBG=1
 	export IBMVETH_DYNDBG
-	ok "ibmveth loaded with dyndbg=+p"
+	ok "ibmveth loaded with dyndbg=+p${IBMVETH_KO:+ (IBMVETH_KO)}"
 	[[ -n "${PEER:-}" ]] && ping_ok || true
 }
 

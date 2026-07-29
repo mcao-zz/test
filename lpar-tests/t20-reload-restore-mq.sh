@@ -4,6 +4,7 @@
 # Quiet-phase test: does NOT need lp7 iperf / under-traffic.
 #
 #   sudo IFACE=env9 PEER=192.168.100.2 ./t20-reload-restore-mq.sh
+#   sudo IFACE=env9 PEER=... IBMVETH_KO=/home/ming/ibmveth-build ./t20-reload-restore-mq.sh
 #
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -29,15 +30,15 @@ ok "pre-reload MQ max_rx=$max_before RX=$RELOAD_RX"
 saved_ip=$(save_iface_ipv4)
 log "saved IPv4: ${saved_ip:-none}"
 
-log "bringing down $IFACE and reloading ibmveth..."
+log "bringing down $IFACE and reloading ibmveth (IBMVETH_KO=${IBMVETH_KO:-modprobe})..."
 iface_down
 sleep 1
 rmmod ibmveth 2>/dev/null || log "WARN: rmmod ibmveth (may already be unloaded)"
 sleep 2
 if [[ "$DYNDBG" = 1 ]]; then
-	modprobe ibmveth dyndbg=+p || die "modprobe ibmveth dyndbg=+p failed"
+	load_ibmveth "+p"
 else
-	modprobe ibmveth || die "modprobe ibmveth failed"
+	load_ibmveth
 fi
 sleep 3
 
