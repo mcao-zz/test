@@ -26,4 +26,4 @@ Update this when the kernel tip or patch count changes.
 | 2026-07-27 | Test plan sharpened after re-review: queue0 IRQ ownership/reopen checks, stats visibility semantics vs current geometry, explicit P14 invalid-buffer recovery expectations, stronger down-state stash and TX verification notes |
 | 2026-07-29 | Tip `7fc556ffa0f6` P15 RSS hash algorithm (ethtool -x/-X); T21 `t21-rss-hfunc.sh` |
 | 2026-07-29 | Tip `35aa5469dac5` P15 folds get_rx_ring_count (fixes ethtool -X ring-count EOPNOTSUPP); T21 hard-fails that signature |
-| 2026-07-30 | Tip `7e14b04f6649` P15 commit message adds Background (why hash get/set; alias map; ring-count for -X) |
+| 2026-07-30 | Tip `7e14b04f6649` P15 commit message tightened (why + aliases + ring-count; ≤75 cols) |
