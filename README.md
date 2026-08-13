@@ -165,6 +165,12 @@ Smoke/T1 also gates **debugfs `buffer_pools`** (Size kept across ifdown;
 Active+Available when up) and **`ping -I $IFACE`** with an RX counter Δ
 (so TX-only / other-NIC routes cannot fake PASS).
 
+**PEER must be on the same L2 as `IFACE`.** Example for lab `env9`
+(`192.168.1.133`): `PEER=192.168.1.153`. Do **not** use a management /
+other-NIC address (`10.48.36.x`) — bare `ping $PEER` can PASS while
+`ping -I env9` fails. T14/`rx_queue_size.sh` now use `-I` every step and
+fail on `WARNING:` / `ibmveth_interrupt` in the dmesg delta.
+
 Legacy (non-MQ firmware only — `ethtool -l` max RX == 1, not `-L rx 1`):
 
 ```bash

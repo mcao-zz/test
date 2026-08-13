@@ -105,7 +105,7 @@ else
 fi
 
 ip_a=$(ip -s link show "$IFACE" | awk '/RX:/{getline; print $1; exit}')
-ping -c 20 -W 1 "$PEER" >/dev/null || die "ping burst failed"
+ping -I "$IFACE" -c 20 -W 1 "$PEER" >/dev/null || die "ping burst -I $IFACE failed"
 ip_b=$(ip -s link show "$IFACE" | awk '/RX:/{getline; print $1; exit}')
 d=$((ip_b - ip_a))
 [[ "$d" -ge 10 ]] || die "RX counters did not advance (Δ=$d)"

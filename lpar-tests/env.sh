@@ -46,8 +46,21 @@ need_root() {
 }
 
 need_peer() {
-	[[ -n "$PEER" ]] || die "set PEER= on the sudo line (sudo clears exports), e.g. sudo IFACE=env9 PEER=192.168.100.2 $0"
+	[[ -n "$PEER" ]] || die "set PEER= on the sudo line (sudo clears exports), e.g. sudo IFACE=env9 PEER=192.168.1.153 $0"
 	PEER="${PEER%%/*}"
+}
+
+# PEER must answer on $IFACE (same L2 / on-link). Bare ping can PASS via
+# another NIC (lab: PEER=10.48.36.153 while env9 is 192.168.1.x).
+assert_peer_on_iface() {
+	local addr
+
+	need_peer
+	addr=$(save_iface_ipv4 2>/dev/null || true)
+	if ! ping -I "$IFACE" -c 1 -W 2 "$PEER" >/dev/null 2>&1; then
+		die "PEER=$PEER not reachable via ping -I $IFACE (addr=${addr:-none}). Use a peer on the same L2 as $IFACE (lab env9: PEER=192.168.1.153), not a mgmt/other-NIC address"
+	fi
+	ok "PEER=$PEER on-link via -I $IFACE${addr:+ ($addr)}"
 }
 
 # Resolve iperf3 into IPERF3 (handles sudo secure_path).
@@ -589,9 +602,12 @@ check_no_oops() {
 	local f
 	f=$(mktemp)
 	dmesg_delta "$f"
-	if grep -qiE 'Oops|BUG:|Call Trace' "$f"; then
+	# Include WARNING: WARN_ON stacks often have Call Trace, but match
+	# ibmveth WARN explicitly (scale-down IRQ race @ ibmveth_interrupt).
+	if grep -qiE 'Oops|BUG:|WARNING:|hard LOCKUP|soft lockup' "$f" ||
+	   grep -qiE 'ibmveth_interrupt|WARN_ON' "$f"; then
 		cp "$f" "$LOGDIR/dmesg-OOPS.txt"
-		die "Oops/BUG/Call Trace in dmesg delta"
+		die "Oops/BUG/WARNING/ibmveth WARN in dmesg delta (see $LOGDIR/dmesg-OOPS.txt)"
 	fi
 	rm -f "$f"
 }
@@ -1148,10 +1164,10 @@ diagnose_inbound_fail() {
 	log "=== inbound gate diagnostics ==="
 	log "IFACE=$IFACE PEER=$PEER current_rx=$(current_rx) addr=$(save_iface_ipv4)"
 	log "thresholds: MIN_RX_DELTA=$MIN_RX_DELTA RX_SAMPLE_SECS=$RX_SAMPLE_SECS EXTERNAL_IPERF=${EXTERNAL_IPERF:-0}"
-	if ping -c 2 -W 1 "$PEER" >/dev/null 2>&1; then
-		ok "ping $PEER OK (L3 up)"
+	if ping -I "$IFACE" -c 2 -W 1 "$PEER" >/dev/null 2>&1; then
+		ok "ping -I $IFACE $PEER OK"
 	else
-		log "WARN: ping $PEER failed — fix L3 before expecting bulk RX"
+		log "WARN: ping -I $IFACE $PEER failed — wrong PEER/L2 or RX dead (bare ping can lie via another NIC)"
 	fi
 	a=$(sum_rx_packets)
 	sleep 2

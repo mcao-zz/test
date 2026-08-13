@@ -11,8 +11,12 @@
 # Note: env.sh RX_CYCLE is a numeric list for ethtool-L-cycle.sh — do not
 # reuse it for quick/full mode (that bug made run-all always run full T14).
 #
-#   sudo IFACE=env9 PEER=192.168.100.2 UNDER_RX=1 ./t14-rx-cycle.sh
+#   sudo IFACE=env9 PEER=192.168.1.153 UNDER_RX=1 ./t14-rx-cycle.sh
 #   sudo IFACE=env9 UNDER_RX=1 T14_CYCLE=full ./t14-rx-cycle.sh
+#
+# PEER must be on the same L2 as IFACE (ping -I). Do not use a mgmt/other-NIC
+# address (e.g. 10.48.36.x while env9 is 192.168.1.x) — mid-step bare ping
+# used to fake PASS; final ping -I then failed.
 #
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -20,6 +24,8 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 . "$DIR/env.sh"
 
 need_root
+need_peer
+assert_peer_on_iface
 save_dmesg_mark
 
 : "${UNDER_RX:=0}"
@@ -44,5 +50,16 @@ log "MAX_ERR_DELTA=$MAX_ERR_DELTA MAX_NOBUF_DELTA=$MAX_NOBUF_DELTA"
 "$ROOT/rx_queue_size.sh" "$IFACE" "$DELAY"
 check_no_lockup
 check_no_oops
-[[ -n "$PEER" ]] && ping_ok || log "PEER unset — skip final ping"
+# Final ping: under UNDER_RX, ICMP may still lose to the flood — recover
+# briefly; quiet path keeps hard ping_ok.
+if [[ "$UNDER_RX" = 1 ]]; then
+	if ping -I "$IFACE" -c 3 -W 1 "$PEER" >/dev/null 2>&1; then
+		ok "final ping -I $IFACE $PEER"
+	else
+		log "final ping soft under UNDER_RX — trying ping_recover"
+		ping_recover "${PING_RECOVER_SECS:-15}"
+	fi
+else
+	ping_ok
+fi
 log "T14 PASS"

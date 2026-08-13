@@ -46,10 +46,12 @@ v4 deltas to validate (beyond v3 plan)
 Prerequisites
 -------------
 * ppc64le PowerVM LPAR, MQ-capable PHYP (ILLAN MQ bit)
-* Peer on same L2 (example: DUT env9=192.168.100.3, peer=192.168.100.2)
-* Root on DUT; IFACE=env9 PEER=192.168.100.2
+* Peer on same L2 as IFACE (lab env9=192.168.1.133 → PEER=192.168.1.153;
+  do not use mgmt/other-NIC addresses like 10.48.36.x)
+* Root on DUT; IFACE=env9 PEER=192.168.1.153
 * Optional: LPAR without MQ bit for T13
 * For real RX: iperf3 servers on DUT, clients on peer (see README)
+* Ping gates: always ping -I $IFACE; dmesg fail on WARNING/ibmveth_interrupt
 
 Quick map: risk → test
 ----------------------
@@ -76,9 +78,9 @@ Pass criteria (global)
 ----------------------
 * No soft lockup / RCU stall / hung task
 * No endless "bad correlator" spam (rate-limited msgs OK under T10)
-* ifup always restores ping within a few seconds
-* dmesg: no new Oops/BUG/Call Trace; WARN only if previously known
-* After each major test: ping -c 3 $PEER OK
+* ifup always restores ping -I $IFACE within a few seconds
+* dmesg: no Oops/BUG/WARNING/ibmveth_interrupt (Call Trace alone is not enough)
+* After each major test: ping -I $IFACE $PEER OK
 * After each -L: ethtool -l RX, ethtool -S rxN_packets rows, and
   /proc/interrupts lines for $IFACE all equal the target count
 * queue0 must remain usable across close/open and resize churn; fail on

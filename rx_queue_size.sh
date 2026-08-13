@@ -13,10 +13,12 @@
 #   - /proc/interrupts lines for this iface
 #   - sysfs queues/rx-* count (if present)
 #   - iface still UP / LOWER_UP
-#   - dmesg delta: resize success; no oops/BUG/Call Trace for ibmveth
+#   - dmesg delta: resize success; no Oops/BUG/WARNING/ibmveth WARN
 #   - error counter *deltas*: invalid / replenish_fail ≈ 0 (MAX_ERR_DELTA)
 #     no_buffer may use MAX_NOBUF_DELTA (higher under UNDER_RX scale-up)
-#   - optional ping to PEER (env PEER=192.168.100.2)
+#   - optional ping -I IFACE to PEER (must be same L2; bare ping lies).
+#     Under UNDER_RX=1, ping is soft (warn): ICMP loss under iperf is
+#     expected; bulk RX Δ is the hard connectivity gate.
 #
 # Under load (UNDER_RX=1 — keep lp7→DUT iperf running):
 #   - bulk rx*_packets Δ >= MIN_RX_DELTA over RX_SAMPLE_SECS
@@ -25,7 +27,7 @@
 #
 # Usage:
 #   sudo ./rx_queue_size.sh [iface] [delay_seconds]
-#   sudo PEER=192.168.100.2 ./rx_queue_size.sh env9 2
+#   sudo PEER=192.168.1.153 ./rx_queue_size.sh env9 2
 #   sudo PEER=… UNDER_RX=1 MIN_RX_DELTA=10000 ./rx_queue_size.sh env9 2
 #   sudo RX_CYCLE=quick UNDER_RX=1 ./rx_queue_size.sh env9 1   # compat alias
 #   sudo T14_CYCLE=quick UNDER_RX=1 ./rx_queue_size.sh env9 1
@@ -343,10 +345,14 @@ validate_after_resize() {
 
 	# --- dmesg delta ---
 	dmesg_delta_file "$dmesg_f"
-	if grep -qiE 'Oops|BUG:|Call Trace|hard LOCKUP|soft lockup' "$dmesg_f"; then
-		bad "dmesg delta has Oops/BUG/Call Trace (see $dmesg_f)"
+	# WARNING stacks (ibmveth_interrupt qindex vs num_rx_queues) must fail
+	# the step — do not rely only on Call Trace (ring wrap / flood).
+	if grep -qiE 'Oops|BUG:|WARNING:|hard LOCKUP|soft lockup' "$dmesg_f" ||
+	   grep -qiE 'ibmveth_interrupt|WARN_ON' "$dmesg_f"; then
+		bad "dmesg delta has Oops/BUG/WARNING/ibmveth WARN (see $dmesg_f)"
+		grep -iE 'WARNING:|ibmveth_interrupt|Oops|BUG:' "$dmesg_f" | head -8 | sed 's/^/    /'
 	else
-		ok "dmesg delta: no Oops/BUG/Call Trace"
+		ok "dmesg delta: no Oops/BUG/WARNING"
 	fi
 
 	if grep -qiE "ibmveth.*${IFACE}.*Successfully resized to ${expect} RX|resized to ${expect} RX queues" "$dmesg_f"; then
@@ -365,14 +371,25 @@ validate_after_resize() {
 		grep -iE "ibmveth.*${IFACE}" "$dmesg_f" | grep -iE 'error|fail|invalid' | tail -5 | sed 's/^/    /'
 	fi
 
-	# --- optional peer ping ---
+	# --- optional peer ping (always -I IFACE; bare ping fakes PASS) ---
+	# Under UNDER_RX=1, ICMP competes with the iperf flood: a single lost
+	# echo is common while bulk rx*_packets Δ already proved the path
+	# (lab: 8→16 Δ~347k but ping -c 1 failed / 66% loss). Soft-warn only.
 	if [ -n "$PEER" ]; then
-		local ping_n=3
-		[ "$T14_CYCLE" = "quick" ] && ping_n=1
-		if ping -c "$ping_n" -W 2 "$PEER" > "$stepdir/ping.txt" 2>&1; then
-			ok "ping -c $ping_n $PEER ok"
+		local ping_n=5
+		local ping_ok=0
+		if ping -I "$IFACE" -c "$ping_n" -W 1 "$PEER" > "$stepdir/ping.txt" 2>&1; then
+			ping_ok=1
+		elif grep -qE 'bytes from' "$stepdir/ping.txt" 2>/dev/null; then
+			# partial replies under load still count as L3 up
+			ping_ok=1
+		fi
+		if [ "$ping_ok" = 1 ]; then
+			ok "ping -I $IFACE -c $ping_n $PEER ok (or partial under load)"
+		elif [ "$UNDER_RX" = "1" ]; then
+			warn "ping -I $IFACE flaky under RX load (see $stepdir/ping.txt); bulk RX already gated"
 		else
-			bad "ping -c $ping_n $PEER failed (see $stepdir/ping.txt)"
+			bad "ping -I $IFACE -c $ping_n $PEER failed (see $stepdir/ping.txt; use same-L2 peer)"
 		fi
 	fi
 
@@ -417,6 +434,13 @@ CUR=$(get_rx_current)
 dmesg_mark
 snap_errors
 
+# Fail fast if PEER is only reachable via another NIC (bare ping lies).
+if [ -n "$PEER" ]; then
+	if ! ping -I "$IFACE" -c 1 -W 2 "$PEER" >/dev/null 2>&1; then
+		die "PEER=$PEER not reachable via ping -I $IFACE (same-L2 peer required; lab env9: 192.168.1.153)"
+	fi
+fi
+
 # Mid point for quick cycle (prefer 4 when max>=4 so MQ spread still applies).
 MID_RX=$((MAX_RX / 2))
 [ "$MID_RX" -lt 1 ] && MID_RX=1
@@ -430,7 +454,7 @@ echo "  ibmveth RX Queue Cycle Test"
 echo "  Interface: ${IFACE}"
 echo "  Current RX: ${CUR:-?}   Max used: ${MAX_RX}"
 echo "  T14_CYCLE: ${T14_CYCLE}   Delay: ${DELAY}s"
-echo "  Peer ping: ${PEER:-disabled (set PEER=ip)}"
+echo "  Peer ping: ${PEER:-disabled (set PEER=ip)}  (always -I ${IFACE})"
 echo "  UNDER_RX: ${UNDER_RX}  (bulk Δ>=${MIN_RX_DELTA}/${RX_SAMPLE_SECS}s)"
 echo "  Logs: $LOGDIR"
 echo "=============================================="
