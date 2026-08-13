@@ -320,7 +320,7 @@ sudo STRESS_SECS=120 ./run_mq_all.sh          # shorten parallel-stress (default
 # MQ+RX=1 / legacy: ./run_rx_1_all.sh  ./run_legacy_all.sh
 ```
 
-Common one-shot knobs (full list in `run_mq_all.sh` header; no man page):
+Common one-shot knobs (full list: `./suite-help.sh` / `SUITE-HELP.txt`):
 
 | Knob | Effect |
 |------|--------|
