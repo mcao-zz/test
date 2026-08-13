@@ -230,7 +230,7 @@ cases derived from each commit message.
 
 | Layer | Path | Role |
 |-------|------|------|
-| **Auto harness** | `lpar-tests/` | Small scripts + `env.sh` + `run-all.sh` (add new T* here) |
+| **Auto harness** | `lpar-tests/` | `run_mq_all.sh` (MQ), `run_rx_1_all.sh` (MQ+RX=1), `run_legacy_all.sh` (true non-MQ); `run-all.sh` → MQ wrapper |
 | **Lab monoliths** | repo root | `verify-mq-adapter.sh`, `test-veth-mq.sh`, `rx_queue_size.sh` — deep/manual or wrapped |
 
 Prefer **new automated cases in `lpar-tests/`**. Keep root scripts for bring-up and heavy one-shot suites; call them from `lpar-tests/lab-smoke.sh` / `t14-rx-cycle.sh`.
@@ -238,15 +238,21 @@ Prefer **new automated cases in `lpar-tests/`**. Keep root scripts for bring-up 
 ```bash
 cd lpar-tests
 # sudo clears exported env — pass IFACE/PEER on the command line:
-sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
-# Flow: quiet → type 'yes' after starting lp7 iperf → prove bulk+MQ RX →
-#       heavy with MQ RX re-proofs between stages → cleanup
-# Thresholds (defaults): MIN_RX_DELTA=10000 / 5s, MIN_ACTIVE_RX_QUEUES=2, MQ_PROOF_RX=8
-# Standalone MQ RX proof (iperf clients already running):
-#   sudo IFACE=env9 PEER=192.168.100.2 ./t-mq-rx-under-load.sh
+
+# Full MQ (env9) — preferred name; run-all.sh is a compat alias
+sudo IFACE=env9 PEER=192.168.1.153 EXTERNAL_IPERF=1 IBMVETH_KO=/home/ming/ibmveth-build \
+  ./run_mq_all.sh
+
+# MQ firmware forced to ethtool -L rx 1 (not legacy) — close/churn/soak/bounce
+sudo IFACE=env9 PEER=192.168.1.153 EXTERNAL_IPERF=1 IBMVETH_KO=... \
+  ./run_rx_1_all.sh
+
+# True legacy FW (max_rx==1), e.g. net0 + public same-L2 peer
+sudo IFACE=net0 PEER=10.48.36.153 EXTERNAL_IPERF=1 IBMVETH_KO=... \
+  ./run_legacy_all.sh
 ```
 
-`run-all.sh` phases:
+`run_mq_all.sh` phases (same as former `run-all.sh`):
 
 0. **Dyndbg load** (`DYNDBG=1`, default) — reload with `dyndbg=+p`
    (`modprobe`, or `insmod` when `IBMVETH_KO=` points at a `.ko` / build dir)
