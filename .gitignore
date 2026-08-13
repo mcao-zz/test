@@ -1,1 +1,2 @@
 verify-logs/*.log
+lpar-tests/lab.conf

@@ -29,40 +29,61 @@ sudo ./test-veth-mq.sh -d env9 -t 192.168.100.2
 
 ---
 
-## Lab roles (example)
+## Lab roles (balco example)
 
-| Role | Example | Notes |
-|------|---------|--------|
-| DUT / target | lp19 `env9` = `192.168.100.3` | Kernel under test; run scripts here |
-| Peer / traffic | lp7 = `192.168.100.2` | Same switch; generate inbound RX to DUT |
+| Role | MQ private L2 | Legacy / public L2 |
+|------|---------------|--------------------|
+| DUT iface | `env9` = `192.168.1.133` | `net0` = `10.48.36.x` |
+| Peer | `192.168.1.153` | `10.48.36.153` |
+| Config | `lpar-tests/lab.conf` (from `lab.conf.example`) | switch profile in that file |
 
-For **RX on the DUT**, `iperf3 -s` belongs on the DUT (or use client `-R`).
+`PEER` must be on the **same L2 as `IFACE`**. Do not use the public peer for `env9`.
+
+For **RX on the DUT**, run `iperf3 -s` on the DUT; peer runs `iperf3 -c $DUT_IP`.
+
+### Lab config (`lab.conf`)
+
+```bash
+cd lpar-tests
+cp lab.conf.example lab.conf   # gitignored — edit IPs/paths
+# sudo IFACE=/PEER= on the command line still override lab.conf
+```
+
+Variables: `IFACE`, `PEER`, `DUT_IP`, `IBMVETH_KO`, `EXTERNAL_IPERF`,
+`IPERF_PORT_FIRST`/`LAST`, `IPERF_PARALLEL`, `IPERF_TIME` (`0` = forever).
 
 ---
 
 ## Two-LPAR traffic (real RX / resize under load)
 
-No special switch programming is required for `iperf3` on ports
-`5201-5216`. You need IP connectivity, `iperf3` on both ends, and those
-TCP ports allowed if a firewall is on.
+Ports `5201–5216` (MQ) or a smaller range (legacy). Need IP connectivity and
+`iperf3` on both ends. Use **`IPERF_TIME=0`** (forever) for `run_mq_all` /
+`T14_CYCLE=full` — finite `-t 3600` often dies mid-suite.
 
 ### 1. Pre-checks
 
 ```bash
 # on DUT
-ip addr show dev env9
-ping -c 3 192.168.100.2
+ip -br addr show env9          # or net0 for legacy
+ping -I env9 -c 3 192.168.1.153
 
 # on peer
-ping -c 3 192.168.100.3
+ping -c 3 192.168.1.133
 ```
-
-Short pings may show warmup loss (ARP); a longer run should be ~0% loss.
 
 ### 2. Start servers on the DUT (RX sink)
 
 ```bash
-# on lp19 (192.168.100.3)
+# on DUT (uses lab.conf)
+cd lpar-tests
+sudo ./iperf-dut.sh            # also prints peer recipe
+# sudo ./iperf-dut.sh stop
+```
+
+Manual equivalent:
+
+```bash
+pkill iperf3 2>/dev/null || true
 for port in $(seq 5201 5216); do
     iperf3 -s -p "$port" -D
 done
@@ -72,34 +93,45 @@ ss -ltnp | grep iperf3
 ### 3. Start clients on the peer (inbound to DUT)
 
 ```bash
-# on lp7 (192.168.100.2)
-export DUT_IP=192.168.100.3
+# on peer — copy lab.conf or set DUT_IP
+export DUT_IP=192.168.1.133
+# from a checkout of this repo on the peer:
+./iperf-peer-recipe.sh         # print commands
+./iperf-peer-recipe.sh run     # start (-t from lab.conf, default 0)
+# ./iperf-peer-recipe.sh stop
+```
 
+Manual equivalent:
+
+```bash
+export DUT_IP=192.168.1.133
+pkill iperf3 2>/dev/null || true
 for port in $(seq 5201 5216); do
-    iperf3 -c "$DUT_IP" -t 300 -P 4 -p "$port" &
+    iperf3 -c "$DUT_IP" -t 0 -P 4 -p "$port" &
 done
 ```
 
-Many TCP flows help exercise PHYP RX queue selection. Watch on DUT:
+Many TCP flows help PHYP RX hashing. Watch on DUT:
 
 ```bash
-watch -n1 'ethtool -S env9 | grep -E "^rx[0-9]+_packets:|^rx[0-9]+_interrupts:"'
+watch -n1 'ethtool -S env9 | grep -E "rx[0-9]+_packets"'
 ```
 
-### 4. Resize while traffic runs
+### 4. Run suites (lab owns iperf)
 
 ```bash
-# on DUT, while iperf is active
-ethtool -S env9 > /tmp/stats_before.txt
-sudo ./rx_queue_size.sh env9 2
-ethtool -S env9 > /tmp/stats_after.txt
+# DUT — EXTERNAL_IPERF=1 so harness does not kill your -t 0 flood
+sudo EXTERNAL_IPERF=1 ./run_mq_all.sh          # if lab.conf set IFACE/PEER/KO
+# or explicit:
+sudo IFACE=env9 PEER=192.168.1.153 IBMVETH_KO=/home/ming/ibmveth-build \
+  EXTERNAL_IPERF=1 ./run_mq_all.sh
 ```
 
-Or run the full suite under traffic:
+### 5. Resize while traffic runs (standalone)
 
 ```bash
-sudo ./verify-mq-adapter.sh -d env9 -D -v
-sudo ./test-veth-mq.sh -d env9 -t 192.168.100.2
+sudo PEER=192.168.1.153 UNDER_RX=1 ./t14-rx-cycle.sh
+# or: sudo ./rx_queue_size.sh env9 2
 ```
 
 ---

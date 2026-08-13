@@ -1,9 +1,42 @@
 # Source from other scripts:  . "$(dirname "$0")/env.sh"
-# Override on command line:  IFACE=env9 PEER=192.168.100.2 ./smoke.sh
+# Override on command line:  IFACE=env9 PEER=192.168.1.153 ./smoke.sh
+# Optional lab defaults: copy lab.conf.example → lab.conf (or LAB_CONF=path)
 
 # sudo's secure_path often omits /usr/local/bin (where iperf3 commonly lives).
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 export PATH
+
+# Apply lab.conf only for variables not already set (sudo IFACE=… wins).
+_load_lab_conf() {
+	local f conf_dir line key val
+	conf_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+	f="${LAB_CONF:-$conf_dir/lab.conf}"
+	[[ -f "$f" ]] || return 0
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		[[ "$line" =~ ^[[:space:]]*# ]] && continue
+		[[ -z "${line//[[:space:]]/}" ]] && continue
+		if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+			key="${BASH_REMATCH[1]}"
+			val="${BASH_REMATCH[2]}"
+			val="${val#\"}"
+			val="${val%\"}"
+			val="${val#\'}"
+			val="${val%\'}"
+			# Skip if already set in the environment (including empty intentional?).
+			if [[ -z "${!key+x}" ]]; then
+				printf -v "$key" '%s' "$val"
+				export "$key"
+			fi
+		fi
+	done <"$f"
+	# Visible once per shell that sources env.sh
+	if [[ -z "${_LAB_CONF_LOADED:-}" ]]; then
+		export _LAB_CONF_LOADED=1
+		printf '[%s] lab.conf loaded: %s (CLI/sudo env overrides)\n' \
+			"$(date '+%H:%M:%S')" "$f"
+	fi
+}
+_load_lab_conf
 
 : "${IFACE:=env9}"
 : "${PEER:=}"                          # required for ping/iperf tests
@@ -13,6 +46,8 @@ export PATH
 : "${EXTERNAL_IPERF:=0}"               # 1 = lab owns iperf; never start/stop/restart
 : "${IPERF_TIME:=60}"
 : "${IPERF_PARALLEL:=4}"
+: "${IPERF_PORT_FIRST:=5201}"
+: "${IPERF_PORT_LAST:=5216}"
 : "${CYCLE_SLEEP:=0.5}"
 : "${LOGDIR:=/tmp/ibmveth-mq-tests}"
 

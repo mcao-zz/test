@@ -1,0 +1,32 @@
+# lab.conf.example — copy to lab.conf and edit (lab.conf is gitignored).
+# Sourced by env.sh only for variables NOT already set on the sudo line.
+#
+#   cp lab.conf.example lab.conf
+#   sudo EXTERNAL_IPERF=1 ./run_mq_all.sh
+#
+# Optional: LAB_CONF=/path/to/other.conf
+
+# --- profile: mq (env9 private L2) ---
+IFACE=env9
+PEER=192.168.1.153
+DUT_IP=192.168.1.133
+IBMVETH_KO=/home/ming/ibmveth-build
+EXTERNAL_IPERF=1
+
+# iperf (DUT servers + peer clients)
+IPERF_PORT_FIRST=5201
+IPERF_PORT_LAST=5216
+IPERF_PARALLEL=4
+IPERF_TIME=0
+# 0 = run forever (needed for T14 full / run_mq_all heavy)
+
+# --- profile: legacy (uncomment & comment mq block above) ---
+# IFACE=net0
+# PEER=10.48.36.153
+# DUT_IP=10.48.36.133
+# IBMVETH_KO=/home/ming/ibmveth-build
+# EXTERNAL_IPERF=1
+# IPERF_PORT_FIRST=5201
+# IPERF_PORT_LAST=5204
+# IPERF_PARALLEL=2
+# IPERF_TIME=0
