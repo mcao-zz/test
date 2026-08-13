@@ -62,8 +62,9 @@ Variables: `IFACE`, `PEER`, `DUT_IP`, `IBMVETH_KO`, `EXTERNAL_IPERF`,
 **Do not** pass `IFACE=` / `PEER=` / `DUT_IP=` / `IBMVETH_KO=` on the command
 line when `lab.conf` is set — those env vars win over the file and are easy
 to get wrong. Override only for a deliberate one-off (e.g. a throwaway peer).
-One-shot flags such as `EXTERNAL_IPERF=1`, `T14_CYCLE=full`, `SKIP_HEAVY=1`
-are fine on the `sudo` line.
+One-shot flags such as `EXTERNAL_IPERF=1`, `T14_CYCLE=full`, `SKIP_HEAVY=1`,
+`SKIP_PARALLEL=1` are fine on the `sudo` line.
+
 ---
 
 ## Two-LPAR traffic (real RX / resize under load)
@@ -314,8 +315,24 @@ sudo CHECK_HEALTH=0 ./run_mq_all.sh
 sudo DYNDBG=0 ./run_mq_all.sh
 sudo T14_CYCLE=full EXTERNAL_IPERF=1 ./run_mq_all.sh
 sudo SKIP_HEAVY=1 ./run_mq_all.sh
+sudo SKIP_PARALLEL=1 ./run_mq_all.sh          # skip 300s hang-hunt (parallel-stress)
+sudo STRESS_SECS=120 ./run_mq_all.sh          # shorten parallel-stress (default 300)
 # MQ+RX=1 / legacy: ./run_rx_1_all.sh  ./run_legacy_all.sh
 ```
+
+Common one-shot knobs (full list in `run_mq_all.sh` header; no man page):
+
+| Knob | Effect |
+|------|--------|
+| `SKIP_PARALLEL=1` | Skip `parallel-stress.sh` (`-L` + ifdown/up hang hunt) |
+| `STRESS_SECS=N` | Duration for that stress (default 300) |
+| `SKIP_HEAVY=1` | Quiet/functional only — no inbound gate + heavy phase |
+| `SKIP_QUIET=1` | Heavy only |
+| `T14_CYCLE=quick\|full` | Short vs exhaustive T14 under load |
+| `EXTERNAL_IPERF=1` | Lab owns iperf; harness does not start/stop/restart it |
+| `CHECK_HEALTH=0` | Disable post-test mem/softnet/adapter health ALERTs |
+
+Also: `head -40 lpar-tests/run_mq_all.sh` or `grep '^#' lpar-tests/run_mq_all.sh | head`.
 
 Piecemeal (same: config in `lab.conf`, only one-shot knobs on CLI):
 
