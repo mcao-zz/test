@@ -157,11 +157,21 @@ resize-under-load.
 | `test-legacy-veth.sh` | Single-queue / fallback |
 
 Reload in those scripts (and `lpar-tests/`) honors `IBMVETH_KO=/path/to/ibmveth.ko`
-(or a build directory). Not part of `run-all.sh` — run legacy separately:
+(or a build directory).
+
+Legacy (non-MQ firmware only — `ethtool -l` max RX == 1, not `-L rx 1`):
+
+```bash
+sudo IFACE=net0 PEER=<peer-ip> ./lpar-tests/t13-legacy.sh
+```
+
+`run-all.sh` auto-runs T13 only when `max_rx==1`.
+
+Older monolith (still useful for deep dive):
 
 ```bash
 sudo IBMVETH_KO=/home/ming/ibmveth-build \
-  ./test-legacy-veth.sh -d env9 -t <peer-ip> -D
+  ./test-legacy-veth.sh -d net0 -t <peer-ip> -D
 ```
 | `rx_queue_size.sh` | Aggressive ethtool -L cycle |
 

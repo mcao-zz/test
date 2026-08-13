@@ -69,6 +69,7 @@ Quick map: risk → test
 | IRQ geometry after resize/close/open       | T14, T18     |
 | set_channels TX with RX                    | T19          |
 | Module reload restores MQ                  | T20          |
+| Probe real_num_rx != MAX while down (v5)   | T23          |
 | RSS hash algo get/set (P15)                | T21          |
 
 Pass criteria (global)
@@ -160,9 +161,20 @@ T22 — stats coherence (ethtool vs ndo / ip / proc; optional sar)
   Script: lpar-tests/t22-stats-coherence.sh (run-all: quiet + heavy UNDER_RX)
   Pass: within STATS_TOLERANCE / STATS_TOL_PCT; no backwards counters
 
-T13 — legacy / non-MQ firmware
-  T1 T2 T6; ethtool -L rx 2 → -EOPNOTSUPP
-  Pass: SQ only; reject cleanly
+T13 — true legacy firmware (max_rx == 1), not SQ-on-MQ
+  Legacy = PHYP without ILLAN MQ bit → ethtool -l Pre-set maximums RX: 1.
+  "ethtool -L rx 1" on MQ FW is still multi_queue-capable — do NOT call that legacy.
+  Checks (non-MQ LPAR only):
+    max_rx == 1
+    while DOWN Current RX == 1 (probe set_real, not alloc MAX)
+    ethtool -L rx 2 rejected
+    ifdown/up churn, MTU bounce, pool0 sysfs, RX counters, -S rows == 1
+    soft CMO entitlement if present
+  Why the churn/MTU/pool/counter checks: legacy still runs the refactored
+  SQ path (P05/P06/P09/…); prove basic bring-up did not regress.
+  Script: lpar-tests/t13-legacy.sh
+  run-all: auto only when max_rx==1; SKIP_T13=1 to skip
+  Pass: SQ-only FW behavior; reject -L>1; probe real_num=1 while down
 
 --------------------------------------------------------------------
 v4-focused additions
@@ -236,6 +248,14 @@ T20 — Module reload restores MQ
   Pass: open complete; hcall_reg_lan_queue > 0 if rx>1; no stuck NAPI;
         MQ geometry can be restored after reload
 
+T23 — Probe real_num_rx_queues matches default while down (v5 / P10)
+  rmmod/modprobe ibmveth; leave $IFACE DOWN
+  ethtool -l Current RX == min(nproc, 8) on MQ FW (or 1 on legacy),
+  and must NOT equal Pre-set maximum when max > default
+  Then ifup + ping
+  Script: lpar-tests/t23-probe-real-rx.sh (SKIP_T23=1 to skip in run-all)
+  Pass: no MAX leak while down after fresh probe
+
 T21 — RSS hash algorithm (P15)
   Quiet (default):
     ethtool -x/-X get/set crc32|xor; reject key/indir/toeplitz; ping
@@ -287,9 +307,10 @@ Auto harness (preferred for new tests):
   lpar-tests/env.sh              — IFACE/PEER, geometry helpers
   lpar-tests/run-all.sh          — ordered suite
   lpar-tests/smoke.sh            — T1+T3
-  lpar-tests/t10-stats-lifetime.sh — P10 stats across ifdown/up
+  lpar-tests/t10-stats-lifetime.sh — P10 stats across ifdown/up (+ v5 no_buffer monotonic)
   lpar-tests/t11-debugfs-geometry.sh — P11 debugfs vs RX geometry
   lpar-tests/t12-stats-debugfs.sh — D11/T12 ethtool names + debugfs
+  lpar-tests/t13-legacy.sh       — T13 legacy / non-MQ checklist (v5)
   lpar-tests/t22-stats-coherence.sh — T22 ethtool vs ip/proc (+sar)
   lpar-tests/t8-down-stash.sh    — T8 P13 stash
   lpar-tests/t17-down-no-live-irqs.sh — T17 no live IRQs while down
@@ -297,6 +318,7 @@ Auto harness (preferred for new tests):
   lpar-tests/t16-hcall-deltas.sh — T16 hcall_* counters
   lpar-tests/t19-set-channels.sh — D13/T19 set_channels (+ TX_SET)
   lpar-tests/t20-reload-restore-mq.sh — T20 module reload restores MQ
+  lpar-tests/t23-probe-real-rx.sh — T23 probe Current RX == default while down
   lpar-tests/t21-rss-hfunc.sh    — T21/P15 RSS hash ethtool -x/-X
   lpar-tests/lab-smoke.sh        — wraps verify (+ optional test-veth-mq)
 

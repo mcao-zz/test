@@ -50,6 +50,33 @@ ethtool -S "$IFACE" >"$LOGDIR/t10-stats-reup.txt" || die "ethtool -S failed afte
 assert_rx_geometry "$RX"
 ok "stats + geometry sane after reopen"
 
+# v5: adapter rx_no_buffer must stay monotonic across reopen / -L reuse
+# (rx_no_buffer_retired carries PHYP page-absolute decreases).
+nobuf_a=$(stat_val rx_no_buffer); nobuf_a=${nobuf_a:-0}
+log "rx_no_buffer after reopen=$nobuf_a (baseline while DOWN was checked parseable)"
+nobuf_down=$(awk '$1 == "rx_no_buffer:" { print $2; exit }' "$LOGDIR/t10-stats-down.txt")
+nobuf_down=${nobuf_down:-0}
+[[ "$nobuf_a" -ge "$nobuf_down" ]] || \
+	die "rx_no_buffer went backwards on reopen: down=$nobuf_down reup=$nobuf_a"
+
+# Shrink then grow: adapter sum must not drop when queue slots are reused.
+shrink=1
+[[ "$RX" -gt 1 ]] || shrink=1
+ethtool_rx "$shrink" || die "ethtool -L rx $shrink (shrink) failed"
+sleep 1
+nobuf_b=$(stat_val rx_no_buffer); nobuf_b=${nobuf_b:-0}
+log "rx_no_buffer after -L rx $shrink: $nobuf_a → $nobuf_b"
+[[ "$nobuf_b" -ge "$nobuf_a" ]] || \
+	die "rx_no_buffer went backwards on -L shrink: $nobuf_a → $nobuf_b"
+
+ethtool_rx "$RX" || die "ethtool -L rx $RX (restore) failed"
+sleep 1
+nobuf_c=$(stat_val rx_no_buffer); nobuf_c=${nobuf_c:-0}
+log "rx_no_buffer after -L rx $RX restore: $nobuf_b → $nobuf_c"
+[[ "$nobuf_c" -ge "$nobuf_b" ]] || \
+	die "rx_no_buffer went backwards on -L grow: $nobuf_b → $nobuf_c"
+ok "rx_no_buffer monotonic across reopen + -L ($nobuf_down → $nobuf_a → $nobuf_b → $nobuf_c)"
+
 if [[ "$UNDER_RX" = 1 ]]; then
 	a=$(sum_rx_packets)
 	sleep "${RX_SAMPLE_SECS:-5}"

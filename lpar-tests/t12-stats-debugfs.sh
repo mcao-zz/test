@@ -39,13 +39,14 @@ else
 	ok "debugfs buffer_pools readable"
 fi
 
-# historical pool0 sysfs still there
+# historical pool0 sysfs still there (under netdev)
 if [[ -d /sys/class/net/$IFACE/pool0 ]] || \
-   find /sys/devices -path "*${IFACE}*" -name pool0 2>/dev/null | head -1 | grep -q .; then
+   [[ -d /sys/class/net/$IFACE/device/pool0 ]] || \
+   find /sys/class/net/$IFACE -maxdepth 2 -type d -name 'pool[0-9]' 2>/dev/null | head -1 | grep -q .; then
 	ok "pool0 sysfs present (Q0 ABI)"
 else
 	# path varies; soft
-	log "WARN: could not find pool0 sysfs (check manually)"
+	log "WARN: could not find pool0 sysfs (check: ls /sys/class/net/$IFACE/pool*)"
 fi
 
 [[ -n "$PEER" ]] && ping_ok || true

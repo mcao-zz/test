@@ -250,12 +250,24 @@ assert_tx_geometry() {
 }
 
 # Path to this iface's debugfs buffer_pools.
-# Driver creates the dir with netdev->name at probe; udev may later rename
-# (eth0 → env9) and leave /sys/kernel/debug/<oldname>/buffer_pools.
+# v4/v5 (J11-3): /sys/kernel/debug/ibmveth/<vio-dev-name>/buffer_pools
+# (stable vio name, not netdev->name — survives udev eth0→env9 rename).
+# Older trees used /sys/kernel/debug/<netdev>/buffer_pools.
 iface_buffer_pools() {
-	local f base c
+	local f base c vio
 	local -a candidates=()
 
+	# Preferred: map netdev → vio device name → nested ibmveth/ path.
+	if [[ -e "/sys/class/net/${IFACE}/device" ]]; then
+		vio=$(basename "$(readlink -f "/sys/class/net/${IFACE}/device")")
+		f="/sys/kernel/debug/ibmveth/${vio}/buffer_pools"
+		if [[ -r "$f" ]]; then
+			echo "$f"
+			return 0
+		fi
+	fi
+
+	# Legacy flat path (pre-nest).
 	f="/sys/kernel/debug/${IFACE}/buffer_pools"
 	if [[ -r "$f" ]]; then
 		echo "$f"
@@ -263,9 +275,17 @@ iface_buffer_pools() {
 	fi
 
 	mapfile -t candidates < <(
-		find /sys/kernel/debug -mindepth 2 -maxdepth 2 -type f -name buffer_pools 2>/dev/null
+		find /sys/kernel/debug -mindepth 2 -maxdepth 4 -type f -name buffer_pools 2>/dev/null
 	)
 	[[ ${#candidates[@]} -gt 0 ]] || return 1
+
+	# Prefer nested ibmveth/<vio>/buffer_pools.
+	for c in "${candidates[@]}"; do
+		if [[ "$c" == */ibmveth/*/buffer_pools && -r "$c" ]]; then
+			echo "$c"
+			return 0
+		fi
+	done
 
 	# Prefer a debugfs dir whose basename is not a live netdev (rename leftover).
 	for c in "${candidates[@]}"; do

@@ -2,7 +2,7 @@
 # Ordered suite matching the preferred lab flow:
 #
 #   0) Optional: reload ibmveth with dyndbg=+p (DYNDBG=1, default)
-#   1) Quiet: smoke, t8, t12, t22, t19, t21, t16
+#   1) Quiet: smoke, t8, t12, t22, t19, t16, t23, t20
 #   2) Interactive: start DUT iperf servers, prompt for lp7 clients,
 #      prove bulk inbound + MQ RX spread under load
 #   3) Heavy: re-prove MQ RX, t22 under RX, t14, re-prove, close/parallel/-L
@@ -20,8 +20,7 @@
 #   SKIP_QUIET=1 ...          # heavy only (still prompts for iperf)
 #   NONINTERACTIVE=1 ...      # no prompts; inbound must already be flowing
 #   SKIP_PARALLEL=1 ...       # skip hang-hunt stress
-#   SKIP_RSS=1 ...            # skip quiet T21 RSS hfunc
-#   SKIP_RSS_RX=1 ...         # skip heavy T21 under-traffic hash switch
+#   SKIP_T13=1 ...            # skip T13 (auto only when max_rx==1 = true legacy FW)
 #   EXTERNAL_IPERF=1 ...      # lab owns iperf; de-dupe phase1↔heavy under-RX
 #   T14_CYCLE=quick ...       # default: short T14 (max→1→mid→max→1)
 #   T14_CYCLE=full ...        # exhaustive T14 every integer (slow under load)
@@ -186,6 +185,15 @@ if [[ "${SKIP_QUIET:-0}" != 1 ]]; then
 	fi
 	[[ "${SKIP_LAB:-0}" = 1 ]] || run lab-smoke "$DIR/lab-smoke.sh"
 	[[ "${SKIP_SMOKE:-0}" = 1 ]] || run smoke "$DIR/smoke.sh"
+	# T13: true legacy FW only (ethtool -l max RX == 1). Not SQ-on-MQ.
+	if [[ "${SKIP_T13:-0}" != 1 ]]; then
+		_max=$(max_rx)
+		if [[ "$_max" -eq 1 ]]; then
+			run t13-legacy bash "$DIR/t13-legacy.sh"
+		else
+			log "skip T13 (max_rx=$_max — MQ firmware; RX=1 ≠ legacy)"
+		fi
+	fi
 	[[ "${SKIP_STATS:-0}" = 1 ]] || run t12-stats "$DIR/t12-stats-debugfs.sh"
 	# EXTERNAL_IPERF: one UNDER_RX coherence pass here; skip heavy re-run.
 	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
@@ -199,12 +207,9 @@ if [[ "${SKIP_QUIET:-0}" != 1 ]]; then
 	[[ "${SKIP_STASH:-0}" = 1 ]] || run t8-stash "$DIR/t8-down-stash.sh"
 	[[ "${SKIP_T17:-0}" = 1 ]] || run t17-down-irqs "$DIR/t17-down-no-live-irqs.sh"
 	[[ "${SKIP_CHANNELS:-0}" = 1 ]] || run t19-channels "$DIR/t19-set-channels.sh"
-	# Quiet get/set/reject always; under EXTERNAL_IPERF also do UNDER_RX once here.
-	[[ "${SKIP_RSS:-0}" = 1 ]] || run t21-rss "$DIR/t21-rss-hfunc.sh"
-	if [[ "${EXTERNAL_IPERF:-0}" = 1 && "${SKIP_RSS_RX:-0}" != 1 ]]; then
-		run t21-rss-under-rx env UNDER_RX=1 "$DIR/t21-rss-hfunc.sh"
-	fi
 	[[ "${SKIP_HCALL:-0}" = 1 ]] || run t16-hcall "$DIR/t16-hcall-deltas.sh"
+	# T23 before T20: both reload; T23 checks probe Current RX while still down.
+	[[ "${SKIP_T23:-0}" = 1 ]] || run t23-probe-real bash "$DIR/t23-probe-real-rx.sh"
 	[[ "${SKIP_T20:-0}" = 1 ]] || run t20-reload "$DIR/t20-reload-restore-mq.sh"
 	# close-sq / L-cycle: under EXTERNAL_IPERF, heavy close-mq + L-under-rx cover this.
 	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
@@ -241,20 +246,15 @@ if [[ "${SKIP_HEAVY:-0}" != 1 ]]; then
 	# ------------------------------------------------------------------
 	log "========== PHASE 3: HEAVY (under proven inbound MQ RX) =========="
 
-	# Gate already proved MQ; under EXTERNAL_IPERF phase 1 also did T21/T22 under RX.
+	# Gate already proved MQ; under EXTERNAL_IPERF phase 1 also did T22 under RX.
 	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
-		log "EXTERNAL_IPERF=1 — skip mq-rx-pre / t22-rx / t21-rx (done in phase 1 + gate)"
+		log "EXTERNAL_IPERF=1 — skip mq-rx-pre / t22-rx (done in phase 1 + gate)"
 	else
 		[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
 			run mq-rx-pre "$DIR/t-mq-rx-under-load.sh" pre-heavy
 
 		[[ "${SKIP_T22:-0}" = 1 ]] || \
 			run t22-coherence-rx env UNDER_RX=1 "$DIR/t22-stats-coherence.sh"
-
-		[[ "${SKIP_RSS_RX:-0}" = 1 ]] || \
-			run t21-rss-under-rx env UNDER_RX=1 "$DIR/t21-rss-hfunc.sh"
-		[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
-			run mq-rx-post-t21 "$DIR/t-mq-rx-under-load.sh" post-t21-rss
 	fi
 
 	# T14 under inbound: each -L step checks error Δ, bulk RX, new-queue traffic
