@@ -42,6 +42,7 @@ for n in $RX_LIST; do
 	[[ "$got_l" == "$n" ]] || die "ethtool -l RX=$got_l want $n"
 	[[ "$rows_s" == "$n" ]] || die "rx*_packets rows=$rows_s want $n"
 	[[ "$rows_d" == "$n" ]] || die "debugfs buffer_pools queue rows=$rows_d want $n"
+	assert_buffer_pools_up "T11-rx$n"
 	# Optional: pool rows = queues * IBMVETH pools (typically 5) — soft check
 	pool_lines=$(awk '/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+/ { c++ } END { print c+0 }' "$bp")
 	log "debugfs pool lines=$pool_lines (expect about $((n * 5)) if 5 pools/queue)"
@@ -49,6 +50,13 @@ for n in $RX_LIST; do
 	ok "RX=$n: -l / -S / debugfs queue rows match"
 done
 
-[[ -n "${PEER:-}" ]] && ping_ok || true
+saved_ip=$(save_iface_ipv4)
+iface_down
+assert_buffer_pools_down "T11-down"
+iface_up
+restore_iface_ipv4 "$saved_ip"
+assert_buffer_pools_up "T11-reopen"
+
+[[ -n "${PEER:-}" ]] && assert_rx_alive_after_up "T11-final" "$saved_ip" || true
 check_no_oops
 log "T11/P11 PASS"

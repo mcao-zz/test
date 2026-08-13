@@ -90,10 +90,49 @@ iface_down() {
 	ip link set "$IFACE" down || die "ip link set $IFACE down"
 }
 
+# Always bind to IFACE so a working net0/default route cannot fake env9 RX.
 ping_ok() {
 	need_peer
-	ping -c 3 -W 2 "$PEER" >/dev/null || die "ping $PEER failed"
-	ok "ping $PEER"
+	ping -I "$IFACE" -c 3 -W 2 "$PEER" >/dev/null 2>&1 || \
+		die "ping -I $IFACE $PEER failed (TX-only / wrong iface / RX dead)"
+	ok "ping -I $IFACE $PEER"
+}
+
+# Sum of per-queue + legacy rx packets (works SQ and MQ).
+sum_rx_packets() {
+	local s
+	s=$(ethtool -S "$IFACE" 2>/dev/null | awk '
+		$1 ~ /^rx[0-9]*_packets:$/ { t += $2 }
+		$1 == "rx_packets:" { t += $2 }
+		END { print t+0 }
+	')
+	echo "${s:-0}"
+}
+
+# After ifdown/up: ping on IFACE must work AND RX counters must move.
+# Catches false PASS where bare `ping $PEER` uses another iface while
+# $IFACE RX is wedged. Optional $2 = CIDR to restore (or set RESTORE_IP=).
+assert_rx_alive_after_up() {
+	local label=${1:-after-up}
+	local cidr=${2:-${RESTORE_IP:-}}
+	local before after
+
+	need_peer
+	iface_up
+	[[ -n "$cidr" ]] && restore_iface_ipv4 "$cidr"
+	sleep 1
+
+	assert_buffer_pools_up "$label"
+
+	before=$(sum_rx_packets)
+	if ! ping -I "$IFACE" -c 5 -W 2 "$PEER" >/dev/null 2>&1; then
+		die "$label: ping -I $IFACE $PEER failed"
+	fi
+	after=$(sum_rx_packets)
+	if [[ "$after" -le "$before" ]]; then
+		die "$label: RX packets flat ($before → $after) after ping -I $IFACE — RX wedge / wrong .ko?"
+	fi
+	ok "$label: ping -I $IFACE OK and RX $before → $after"
 }
 
 ethtool_rx() {
@@ -319,20 +358,102 @@ count_debugfs_queue_rows() {
 	' "$f"
 }
 
-# Bounded ping recovery after stress (default 30s).
+# When UP: live pools must have Size>0 and Active=1; at least one Active pool.
+# Catches free_buffer_pool() clearing size/active (ifdown/up RX death).
+assert_buffer_pools_up() {
+	local label=${1:-up}
+	local bp active_n bad
+	bp=$(iface_buffer_pools) || die "$label: missing debugfs buffer_pools"
+	if grep -q '^# down:' "$bp" 2>/dev/null; then
+		die "$label: buffer_pools still shows # down: (iface not opened?)"
+	fi
+	# Cols: Queue Pool Size BuffSize Active Available
+	bad=$(awk '
+		/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+/ {
+			size = $3 + 0; active = $5 + 0
+			if (active == 1 && size == 0) bad++
+			if (active == 1) live++
+			# Classic regression: pools 0/1/4 cleared to Size=0 Active=0
+			# while inactive 2/3 keep Size=256. Flag Size=0 on small/jumbo
+			# buff sizes that should stay configured.
+			bs = $4 + 0
+			if (size == 0 && (bs == 512 || bs == 2048 || bs == 65536))
+				cleared++
+		}
+		END {
+			if (live + 0 < 1) print "no-active-pools"
+			else if (bad + 0 > 0) print "active-with-size-0"
+			else if (cleared + 0 > 0) print "geometry-cleared-" cleared
+			else print ""
+		}
+	' "$bp")
+	if [[ -n "$bad" ]]; then
+		head -12 "$bp" | tee "$LOGDIR/buffer_pools-fail-${label}.txt" >&2 || true
+		die "$label: buffer_pools unhealthy ($bad) — see $LOGDIR/buffer_pools-fail-${label}.txt"
+	fi
+	active_n=$(awk '/^[[:space:]]*[0-9]+/ && $5+0==1 { c++ } END { print c+0 }' "$bp")
+	ok "$label: buffer_pools live (Active=1 rows=$active_n) at $bp"
+}
+
+# When DOWN: Size must remain (probe/sysfs geometry); Active/Available show 0.
+assert_buffer_pools_down() {
+	local label=${1:-down}
+	local bp bad
+	bp=$(iface_buffer_pools) || die "$label: missing debugfs buffer_pools"
+	bad=$(awk '
+		/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+/ {
+			size = $3 + 0; bs = $4 + 0; active = $5 + 0
+			if (active != 0) live++
+			if (size == 0 && (bs == 512 || bs == 2048 || bs == 65536))
+				cleared++
+		}
+		END {
+			if (cleared + 0 > 0) print "geometry-cleared-" cleared
+			else if (live + 0 > 0) print "still-active-" live
+			else print ""
+		}
+	' "$bp")
+	if [[ -n "$bad" ]]; then
+		head -12 "$bp" | tee "$LOGDIR/buffer_pools-fail-${label}.txt" >&2 || true
+		die "$label: buffer_pools bad while down ($bad)"
+	fi
+	ok "$label: buffer_pools geometry kept while down"
+}
+
+# When IBMVETH_KO is set, loaded module must match that .ko (modprobe often lies).
+assert_ibmveth_ko_loaded() {
+	local ko build loaded
+	[[ -n "${IBMVETH_KO:-}" ]] || return 0
+	ko=$(resolve_ibmveth_ko) || die "IBMVETH_KO set but not resolvable: $IBMVETH_KO"
+	build=$(modinfo -F srcversion "$ko" 2>/dev/null || true)
+	loaded=$(cat /sys/module/ibmveth/srcversion 2>/dev/null || true)
+	[[ -n "$build" ]] || die "modinfo srcversion empty for $ko"
+	[[ -n "$loaded" ]] || die "ibmveth not loaded (/sys/module/ibmveth/srcversion)"
+	if [[ "$build" != "$loaded" ]]; then
+		die "wrong ibmveth loaded: build=$build loaded=$loaded (use insmod $ko; modprobe may pick backup)"
+	fi
+	ok "ibmveth srcversion matches IBMVETH_KO ($loaded)"
+}
+
+# Bounded ping recovery after stress (default 30s). Uses -I IFACE.
 ping_recover() {
 	local secs=${1:-${PING_RECOVER_SECS:-30}}
 	local i
 	need_peer
 	iface_up
+	if [[ -n "${RESTORE_IP:-}" ]]; then
+		restore_iface_ipv4 "$RESTORE_IP"
+	fi
 	for ((i = 1; i <= secs; i++)); do
-		if ping -c 1 -W 1 "$PEER" >/dev/null 2>&1; then
-			ok "ping $PEER recovered in ${i}s"
+		if ping -I "$IFACE" -c 1 -W 1 "$PEER" >/dev/null 2>&1; then
+			ok "ping -I $IFACE $PEER recovered in ${i}s"
+			# One reply is not enough — prove RX counters move.
+			assert_rx_alive_after_up "ping_recover"
 			return 0
 		fi
 		sleep 1
 	done
-	die "ping $PEER did not recover within ${secs}s"
+	die "ping -I $IFACE $PEER did not recover within ${secs}s"
 }
 
 # Snapshot / compare core error counters (absolute Δ since snap).
@@ -407,13 +528,16 @@ ensure_ibmveth_dyndbg() {
 	sleep 3
 
 	ip link show "$IFACE" >/dev/null || die "netdev $IFACE missing after dyndbg reload"
+	assert_ibmveth_ko_loaded
 	iface_up
 	restore_iface_ipv4 "$saved_ip"
 	sleep 2
 	IBMVETH_DYNDBG=1
 	export IBMVETH_DYNDBG
 	ok "ibmveth loaded with dyndbg=+p${IBMVETH_KO:+ (IBMVETH_KO)}"
-	[[ -n "${PEER:-}" ]] && ping_ok || true
+	if [[ -n "${PEER:-}" ]]; then
+		RESTORE_IP=$saved_ip assert_rx_alive_after_up "dyndbg-load" "$saved_ip"
+	fi
 }
 
 restore_iface_ipv4() {

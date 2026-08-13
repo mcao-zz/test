@@ -93,8 +93,11 @@ Test details
 T1 — SQ bring-up / tear-down churn
   ethtool -L $IFACE rx 1
   for i in $(seq 1 50); do ip link set $IFACE down; ip link set $IFACE up; done
-  ping -c 5 $PEER
-  Pass: no hang; link up; ping OK
+  Gates (smoke.sh): ping -I $IFACE (not bare ping — avoids fake PASS via
+  another NIC); debugfs buffer_pools Size kept while down / Active when up;
+  RX counters must move after reopen. IBMVETH_KO srcversion must match
+  loaded module when set (modprobe often loads a stale .ko).
+  Pass: no hang; pools healthy; ping -I + RX Δ OK
 
 T2 — SQ traffic + ifdown/up
   iperf3 bidirectional; every 10s ifdown/up for ~2 min

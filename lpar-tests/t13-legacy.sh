@@ -59,12 +59,17 @@ sleep 1
 
 # Lifecycle / datapath still healthy on classic SQ path (series refactors).
 log "ifdown/up × $DOWN_UP_ROUNDS"
-for _ in $(seq 1 "$DOWN_UP_ROUNDS"); do
+saved_ip=$(save_iface_ipv4)
+for i in $(seq 1 "$DOWN_UP_ROUNDS"); do
 	iface_down
+	[[ "$i" -eq 1 || "$i" -eq "$DOWN_UP_ROUNDS" ]] && assert_buffer_pools_down "T13-down-$i"
 	iface_up
+	restore_iface_ipv4 "$saved_ip"
+	[[ "$i" -eq 1 || "$i" -eq "$DOWN_UP_ROUNDS" ]] && \
+		assert_rx_alive_after_up "T13-up-$i" "$saved_ip"
 done
 sleep 1
-ping_ok
+assert_rx_alive_after_up "T13-churn-final" "$saved_ip"
 ok "ifdown/up churn × $DOWN_UP_ROUNDS"
 
 old_mtu=$(cat /sys/class/net/"$IFACE"/mtu)

@@ -25,19 +25,13 @@ rows=$(count_rx_stat_rows)
 [[ "$rows" == "$n" ]] || die "rx*_packets rows=$rows want $n"
 ok "per-queue rx*_packets rows=$rows"
 
-# debugfs buffer_pools
-mapfile -t pools < <(find /sys/kernel/debug -name buffer_pools 2>/dev/null | head -5)
-if [[ ${#pools[@]} -eq 0 ]]; then
-	log "WARN: no debugfs buffer_pools (debugfs mounted? CONFIG?)"
-else
-	for f in "${pools[@]}"; do
-		log "--- $f ---"
-		head -40 "$f" | tee "$LOGDIR/buffer_pools.txt" | head -20
-		# Expect queue/pool columns somehow
-		grep -qiE 'queue|pool|buff' "$f" || log "WARN: unexpected format"
-	done
-	ok "debugfs buffer_pools readable"
-fi
+# debugfs buffer_pools — must exist and look live while UP
+bp=$(iface_buffer_pools) || die "missing debugfs buffer_pools (IFACE=$IFACE)"
+ok "buffer_pools at $bp"
+head -20 "$bp" | tee "$LOGDIR/buffer_pools.txt" >/dev/null
+assert_buffer_pools_up "T12"
+# Soft format check
+grep -qiE 'queue|pool|buff' "$bp" || log "WARN: unexpected buffer_pools format"
 
 # historical pool0 sysfs still there (under netdev)
 if [[ -d /sys/class/net/$IFACE/pool0 ]] || \
@@ -48,6 +42,13 @@ else
 	# path varies; soft
 	log "WARN: could not find pool0 sysfs (check: ls /sys/class/net/$IFACE/pool*)"
 fi
+
+saved_ip=$(save_iface_ipv4)
+iface_down
+assert_buffer_pools_down "T12-down"
+iface_up
+restore_iface_ipv4 "$saved_ip"
+assert_rx_alive_after_up "T12-reopen" "$saved_ip"
 
 [[ -n "$PEER" ]] && ping_ok || true
 check_no_oops

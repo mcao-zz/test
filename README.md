@@ -157,7 +157,13 @@ resize-under-load.
 | `test-legacy-veth.sh` | Single-queue / fallback |
 
 Reload in those scripts (and `lpar-tests/`) honors `IBMVETH_KO=/path/to/ibmveth.ko`
-(or a build directory).
+(or a build directory) via **`insmod`**, then checks `srcversion` matches
+`/sys/module/ibmveth/srcversion`. Do not trust bare `modprobe` on labs with
+backup `.ko` copies — smoke/T1 will FAIL if the wrong module is loaded.
+
+Smoke/T1 also gates **debugfs `buffer_pools`** (Size kept across ifdown;
+Active+Available when up) and **`ping -I $IFACE`** with an RX counter Δ
+(so TX-only / other-NIC routes cannot fake PASS).
 
 Legacy (non-MQ firmware only — `ethtool -l` max RX == 1, not `-L rx 1`):
 

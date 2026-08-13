@@ -14,7 +14,8 @@
 #   - sysfs queues/rx-* count (if present)
 #   - iface still UP / LOWER_UP
 #   - dmesg delta: resize success; no oops/BUG/Call Trace for ibmveth
-#   - error counter *deltas* (invalid / no_buffer / replenish_fail) ≈ 0
+#   - error counter *deltas*: invalid / replenish_fail ≈ 0 (MAX_ERR_DELTA)
+#     no_buffer may use MAX_NOBUF_DELTA (higher under UNDER_RX scale-up)
 #   - optional ping to PEER (env PEER=192.168.100.2)
 #
 # Under load (UNDER_RX=1 — keep lp7→DUT iperf running):
@@ -51,6 +52,9 @@ MIN_RX_DELTA="${MIN_RX_DELTA:-10000}"
 MIN_ACTIVE_RX_QUEUES="${MIN_ACTIVE_RX_QUEUES:-2}"
 MIN_NEW_QUEUE_DELTA="${MIN_NEW_QUEUE_DELTA:-1}"
 MAX_ERR_DELTA="${MAX_ERR_DELTA:-0}"
+# PHYP no_buffer bumps are normal for a few packets while new queues
+# replenish under load. Separate from invalid/replenish_fail (still strict).
+MAX_NOBUF_DELTA="${MAX_NOBUF_DELTA:-$MAX_ERR_DELTA}"
 # Scale-up extra sample seconds (full cycle default 5; quick uses 2).
 RX_SCALEUP_EXTRA="${RX_SCALEUP_EXTRA:-}"
 
@@ -170,8 +174,11 @@ dmesg_delta_file() {
 }
 
 # Compare error counters to pre-resize snapshot.
+# invalid / replenish_fail use MAX_ERR_DELTA (default 0).
+# no_buffer uses MAX_NOBUF_DELTA (may be higher under UNDER_RX).
 check_error_deltas() {
 	local inv nobuf repfail d_inv d_nobuf d_rep
+	local max_nobuf=${MAX_NOBUF_DELTA:-$MAX_ERR_DELTA}
 	inv=$(stat_val rx_invalid_buffer); inv=${inv:-0}
 	nobuf=$(stat_val rx_no_buffer); nobuf=${nobuf:-0}
 	repfail=$(stat_val replenish_add_buff_failure); repfail=${repfail:-0}
@@ -180,11 +187,11 @@ check_error_deltas() {
 	d_rep=$((repfail - SNAP_REPFAIL))
 
 	if [ "$d_inv" -le "$MAX_ERR_DELTA" ] && \
-	   [ "$d_nobuf" -le "$MAX_ERR_DELTA" ] && \
+	   [ "$d_nobuf" -le "$max_nobuf" ] && \
 	   [ "$d_rep" -le "$MAX_ERR_DELTA" ]; then
-		ok "error Δ: invalid=$d_inv no_buffer=$d_nobuf replenish_fail=$d_rep (max $MAX_ERR_DELTA)"
+		ok "error Δ: invalid=$d_inv no_buffer=$d_nobuf replenish_fail=$d_rep (max err=$MAX_ERR_DELTA nobuf=$max_nobuf)"
 	else
-		bad "error Δ spike: invalid=$d_inv no_buffer=$d_nobuf replenish_fail=$d_rep (abs now inv=$inv nobuf=$nobuf repfail=$repfail)"
+		bad "error Δ spike: invalid=$d_inv no_buffer=$d_nobuf replenish_fail=$d_rep (abs now inv=$inv nobuf=$nobuf repfail=$repfail; lim err=$MAX_ERR_DELTA nobuf=$max_nobuf)"
 	fi
 }
 
