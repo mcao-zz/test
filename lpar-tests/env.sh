@@ -1,6 +1,6 @@
 # Source from other scripts:  . "$(dirname "$0")/env.sh"
-# Override on command line:  IFACE=env9 PEER=192.168.1.153 ./smoke.sh
-# Optional lab defaults: copy lab.conf.example → lab.conf (or LAB_CONF=path)
+# Prefer lab.conf for IFACE/PEER/…; avoid IFACE=… on the sudo line (CLI wins).
+# Optional: LAB_CONF=/path/to/other.conf
 
 # sudo's secure_path often omits /usr/local/bin (where iperf3 commonly lives).
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
@@ -32,7 +32,7 @@ _load_lab_conf() {
 	# Visible once per shell that sources env.sh
 	if [[ -z "${_LAB_CONF_LOADED:-}" ]]; then
 		export _LAB_CONF_LOADED=1
-		printf '[%s] lab.conf loaded: %s (CLI/sudo env overrides)\n' \
+		printf '[%s] lab.conf loaded: %s (prefer file; CLI IFACE/PEER overrides — avoid)\n' \
 			"$(date '+%H:%M:%S')" "$f"
 	fi
 }

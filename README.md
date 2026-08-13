@@ -43,15 +43,27 @@ For **RX on the DUT**, run `iperf3 -s` on the DUT; peer runs `iperf3 -c $DUT_IP`
 
 ### Lab config (`lab.conf`)
 
+**Prefer the config file.** Put `IFACE` / `PEER` / `DUT_IP` / `IBMVETH_KO` /
+iperf knobs in `lab.conf` and run suites **without** re-stating them on the
+`sudo` line. That avoids accidental wrong-L2 `PEER` overrides.
+
 ```bash
 cd lpar-tests
-cp lab.conf.example lab.conf   # gitignored — edit IPs/paths
-# sudo IFACE=/PEER= on the command line still override lab.conf
+cp lab.conf.example lab.conf   # gitignored — edit IPs/paths once
+# Switch MQ ↔ legacy by editing the profile in lab.conf (do not mix IPs).
+
+sudo ./run_mq_all.sh           # uses lab.conf as-is
+sudo EXTERNAL_IPERF=1 ./run_mq_all.sh   # OK: one-shot knob, not IFACE/PEER
 ```
 
 Variables: `IFACE`, `PEER`, `DUT_IP`, `IBMVETH_KO`, `EXTERNAL_IPERF`,
 `IPERF_PORT_FIRST`/`LAST`, `IPERF_PARALLEL`, `IPERF_TIME` (`0` = forever).
 
+**Do not** pass `IFACE=` / `PEER=` / `DUT_IP=` / `IBMVETH_KO=` on the command
+line when `lab.conf` is set — those env vars win over the file and are easy
+to get wrong. Override only for a deliberate one-off (e.g. a throwaway peer).
+One-shot flags such as `EXTERNAL_IPERF=1`, `T14_CYCLE=full`, `SKIP_HEAVY=1`
+are fine on the `sudo` line.
 ---
 
 ## Two-LPAR traffic (real RX / resize under load)
@@ -120,17 +132,15 @@ watch -n1 'ethtool -S env9 | grep -E "rx[0-9]+_packets"'
 ### 4. Run suites (lab owns iperf)
 
 ```bash
-# DUT — EXTERNAL_IPERF=1 so harness does not kill your -t 0 flood
-sudo EXTERNAL_IPERF=1 ./run_mq_all.sh          # if lab.conf set IFACE/PEER/KO
-# or explicit:
-sudo IFACE=env9 PEER=192.168.1.153 IBMVETH_KO=/home/ming/ibmveth-build \
-  EXTERNAL_IPERF=1 ./run_mq_all.sh
+# DUT — lab.conf supplies IFACE/PEER/KO; do not re-pass them here
+sudo EXTERNAL_IPERF=1 ./run_mq_all.sh
+# EXTERNAL_IPERF can also live in lab.conf (example sets it to 1)
 ```
 
 ### 5. Resize while traffic runs (standalone)
 
 ```bash
-sudo PEER=192.168.1.153 UNDER_RX=1 ./t14-rx-cycle.sh
+sudo UNDER_RX=1 ./t14-rx-cycle.sh    # PEER from lab.conf
 # or: sudo ./rx_queue_size.sh env9 2
 ```
 
@@ -269,19 +279,15 @@ Prefer **new automated cases in `lpar-tests/`**. Keep root scripts for bring-up 
 
 ```bash
 cd lpar-tests
-# sudo clears exported env — pass IFACE/PEER on the command line:
+# Prefer lab.conf for IFACE/PEER/DUT_IP/IBMVETH_KO (do not override on CLI).
+# Switch MQ ↔ legacy by editing the profile in lab.conf, then:
 
-# Full MQ (env9) — preferred name; run-all.sh is a compat alias
-sudo IFACE=env9 PEER=192.168.1.153 EXTERNAL_IPERF=1 IBMVETH_KO=/home/ming/ibmveth-build \
-  ./run_mq_all.sh
+sudo ./run_mq_all.sh          # Full MQ; run-all.sh is a compat alias
+sudo ./run_rx_1_all.sh        # MQ FW forced to ethtool -L rx 1 (not legacy)
+sudo ./run_legacy_all.sh      # True legacy FW (max_rx==1)
 
-# MQ firmware forced to ethtool -L rx 1 (not legacy) — close/churn/soak/bounce
-sudo IFACE=env9 PEER=192.168.1.153 EXTERNAL_IPERF=1 IBMVETH_KO=... \
-  ./run_rx_1_all.sh
-
-# True legacy FW (max_rx==1), e.g. net0 + public same-L2 peer
-sudo IFACE=net0 PEER=10.48.36.153 EXTERNAL_IPERF=1 IBMVETH_KO=... \
-  ./run_legacy_all.sh
+# One-shot knobs only — not IFACE/PEER:
+sudo EXTERNAL_IPERF=1 T14_CYCLE=full ./run_mq_all.sh
 ```
 
 `run_mq_all.sh` phases (same as former `run-all.sh`):
@@ -300,33 +306,32 @@ sudo IFACE=net0 PEER=10.48.36.153 EXTERNAL_IPERF=1 IBMVETH_KO=... \
 4. **Cleanup** — stop only iperf servers this run started; final ping
 
 ```bash
-# MQ suite knobs (run_mq_all.sh; run-all.sh is an alias)
-sudo IFACE=env9 PEER=192.168.1.153 ./run_mq_all.sh
-sudo IFACE=env9 PEER=192.168.1.153 IBMVETH_KO=/home/ming/ibmveth-build ./run_mq_all.sh
-sudo IFACE=env9 PEER=192.168.1.153 EXTERNAL_IPERF=1 ./run_mq_all.sh
-sudo IFACE=env9 PEER=192.168.1.153 ./run_mq_all.sh --external-iperf
-sudo IFACE=env9 PEER=192.168.1.153 CHECK_HEALTH=0 ./run_mq_all.sh
-sudo IFACE=env9 PEER=192.168.1.153 DYNDBG=0 ./run_mq_all.sh
-sudo IFACE=env9 PEER=192.168.1.153 T14_CYCLE=full EXTERNAL_IPERF=1 ./run_mq_all.sh
-sudo IFACE=env9 PEER=192.168.1.153 SKIP_HEAVY=1 ./run_mq_all.sh
-# MQ+RX=1 / legacy (see block above): ./run_rx_1_all.sh  ./run_legacy_all.sh
+# MQ suite knobs (IFACE/PEER/KO from lab.conf — do not re-pass them)
+sudo ./run_mq_all.sh
+sudo EXTERNAL_IPERF=1 ./run_mq_all.sh
+sudo ./run_mq_all.sh --external-iperf
+sudo CHECK_HEALTH=0 ./run_mq_all.sh
+sudo DYNDBG=0 ./run_mq_all.sh
+sudo T14_CYCLE=full EXTERNAL_IPERF=1 ./run_mq_all.sh
+sudo SKIP_HEAVY=1 ./run_mq_all.sh
+# MQ+RX=1 / legacy: ./run_rx_1_all.sh  ./run_legacy_all.sh
 ```
 
-Piecemeal (same `sudo VAR=...` pattern):
+Piecemeal (same: config in `lab.conf`, only one-shot knobs on CLI):
 
 ```bash
-sudo IFACE=env9 PEER=192.168.1.153 ./smoke.sh
-sudo IFACE=env9 PEER=192.168.1.153 ./t10-stats-lifetime.sh
-sudo IFACE=env9 PEER=192.168.1.153 ./t11-debugfs-geometry.sh
-sudo IFACE=env9 PEER=192.168.1.153 ./t12-stats-debugfs.sh
-sudo IFACE=env9 PEER=192.168.1.153 ./t22-stats-coherence.sh
-sudo IFACE=env9 PEER=192.168.1.153 UNDER_RX=1 ./t22-stats-coherence.sh
-sudo IFACE=env9 PEER=192.168.1.153 ./t8-down-stash.sh
-sudo IFACE=env9 PEER=192.168.1.153 ./t17-down-no-live-irqs.sh
-sudo IFACE=env9 PEER=192.168.1.153 ./t19-set-channels.sh
-sudo IFACE=env9 PEER=192.168.1.153 TX_SET=2 ./t19-set-channels.sh
-sudo IFACE=env9 PEER=192.168.1.153 ./t21-rss-hfunc.sh
-sudo IFACE=env9 PEER=192.168.1.153 ./t20-reload-restore-mq.sh
-sudo IFACE=env9 PEER=192.168.1.153 ./t16-hcall-deltas.sh
-sudo IFACE=env9 PEER=192.168.1.153 LAB_FULL=1 ./lab-smoke.sh
+sudo ./smoke.sh
+sudo ./t10-stats-lifetime.sh
+sudo ./t11-debugfs-geometry.sh
+sudo ./t12-stats-debugfs.sh
+sudo ./t22-stats-coherence.sh
+sudo UNDER_RX=1 ./t22-stats-coherence.sh
+sudo ./t8-down-stash.sh
+sudo ./t17-down-no-live-irqs.sh
+sudo ./t19-set-channels.sh
+sudo TX_SET=2 ./t19-set-channels.sh
+sudo ./t21-rss-hfunc.sh
+sudo ./t20-reload-restore-mq.sh
+sudo ./t16-hcall-deltas.sh
+sudo LAB_FULL=1 ./lab-smoke.sh
 ```

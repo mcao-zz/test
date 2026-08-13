@@ -1,8 +1,10 @@
 # lab.conf.example — copy to lab.conf and edit (lab.conf is gitignored).
-# Sourced by env.sh only for variables NOT already set on the sudo line.
+# Prefer this file for IFACE/PEER/DUT_IP/IBMVETH_KO/iperf knobs.
+# Do not also pass those on the sudo line — CLI env wins and is easy to get wrong.
+# One-shot knobs (T14_CYCLE, SKIP_HEAVY, …) may still go on the command line.
 #
 #   cp lab.conf.example lab.conf
-#   sudo EXTERNAL_IPERF=1 ./run_mq_all.sh
+#   sudo ./run_mq_all.sh
 #
 # Optional: LAB_CONF=/path/to/other.conf
 
