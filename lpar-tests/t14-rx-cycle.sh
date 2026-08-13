@@ -11,6 +11,9 @@
 # Note: env.sh RX_CYCLE is a numeric list for ethtool-L-cycle.sh — do not
 # reuse it for quick/full mode (that bug made run-all always run full T14).
 #
+# T14_CYCLE=full under UNDER_RX needs long-lived peer iperf (many minutes).
+# Use -t 0 or -t 7200; finite -t 3600 often dies mid reverse phase.
+#
 #   sudo IFACE=env9 PEER=192.168.1.153 UNDER_RX=1 ./t14-rx-cycle.sh
 #   sudo IFACE=env9 UNDER_RX=1 T14_CYCLE=full ./t14-rx-cycle.sh
 #

@@ -199,6 +199,8 @@ check_error_deltas() {
 
 # Sample RX under load: bulk + survivor/new-queue checks.
 # Args: expect_rx prev_rx stepdir
+# Retries when bulk Δ is low: full T14 under UNDER_RX can outlive finite
+# iperf -t on the peer (lab: reverse 12→11 Δ=4433 while ping -I still OK).
 check_rx_under_load() {
 	local expect=$1
 	local prev=$2
@@ -206,6 +208,9 @@ check_rx_under_load() {
 	local before_f after_f wait=$RX_SAMPLE_SECS
 	local q c b d total=0 active=0 new_hit=0 need_active
 	local min_q=$MIN_ACTIVE_RX_QUEUES
+	local tries=${UNDER_RX_RETRIES:-3}
+	local attempt=1
+	local bulk_ok=0
 
 	# Scale-up: give the hypervisor hasher a longer window to hit new queues
 	if [ "$expect" -gt "$prev" ]; then
@@ -217,32 +222,51 @@ check_rx_under_load() {
 	before_f="$stepdir/rx-before-sample.txt"
 	after_f="$stepdir/rx-after-sample.txt"
 
-	snapshot_rx_packets >"$before_f"
-	sleep "$wait"
-	snapshot_rx_packets >"$after_f"
+	while [ "$attempt" -le "$tries" ]; do
+		total=0
+		active=0
+		new_hit=0
+		snapshot_rx_packets >"$before_f"
+		sleep "$wait"
+		snapshot_rx_packets >"$after_f"
 
-	echo "  RX sample ${wait}s (UNDER_RX=1, need bulk Δ>=$MIN_RX_DELTA):"
-	while read -r q c; do
-		b=$(awk -v q="$q" '$1 == q { print $2; exit }' "$before_f")
-		b=${b:-0}
-		d=$((c - b))
-		total=$((total + d))
-		if [ "$d" -gt 0 ]; then
-			active=$((active + 1))
-			echo "    rx${q}_packets Δ=$d"
+		echo "  RX sample ${wait}s attempt $attempt/$tries (UNDER_RX=1, need bulk Δ>=$MIN_RX_DELTA):"
+		while read -r q c; do
+			b=$(awk -v q="$q" '$1 == q { print $2; exit }' "$before_f")
+			b=${b:-0}
+			d=$((c - b))
+			total=$((total + d))
+			if [ "$d" -gt 0 ]; then
+				active=$((active + 1))
+				echo "    rx${q}_packets Δ=$d"
+			fi
+			if [ "$expect" -gt "$prev" ] && [ "$q" -ge "$prev" ] && [ "$d" -ge "$MIN_NEW_QUEUE_DELTA" ]; then
+				new_hit=$((new_hit + 1))
+			fi
+		done <"$after_f"
+
+		echo "    total Δ=$total active_queues=$active new_queue_hits=$new_hit (prev_rx=$prev → $expect)"
+
+		if [ "$total" -ge "$MIN_RX_DELTA" ]; then
+			bulk_ok=1
+			break
 		fi
-		# New queues are qid >= previous RX count
-		if [ "$expect" -gt "$prev" ] && [ "$q" -ge "$prev" ] && [ "$d" -ge "$MIN_NEW_QUEUE_DELTA" ]; then
-			new_hit=$((new_hit + 1))
+		if [ "$attempt" -lt "$tries" ]; then
+			warn "bulk Δ=$total < $MIN_RX_DELTA — retrying (peer iperf may have ended; use -t 0 or long -t)"
+			sleep 2
 		fi
-	done <"$after_f"
+		attempt=$((attempt + 1))
+	done
 
-	echo "    total Δ=$total active_queues=$active new_queue_hits=$new_hit (prev_rx=$prev → $expect)"
-
-	if [ "$total" -ge "$MIN_RX_DELTA" ]; then
+	if [ "$bulk_ok" = 1 ]; then
 		ok "bulk RX after resize (Δ=$total >= $MIN_RX_DELTA)"
 	else
-		bad "bulk RX missing after resize (Δ=$total < $MIN_RX_DELTA) — keep lp7 iperf running"
+		# Ping OK + low Δ ⇒ traffic source died, not RX wedge.
+		if [ -n "$PEER" ] && ping -I "$IFACE" -c 2 -W 1 "$PEER" >/dev/null 2>&1; then
+			bad "bulk RX missing (Δ=$total < $MIN_RX_DELTA) but ping -I $IFACE OK — peer iperf likely finished; restart clients with -t 0 / -t 7200 before T14_CYCLE=full"
+		else
+			bad "bulk RX missing after resize (Δ=$total < $MIN_RX_DELTA) — keep peer iperf running (or RX wedge)"
+		fi
 	fi
 
 	# Scale-down / steady MQ: survivors should spread when expect >= 4
@@ -253,10 +277,12 @@ check_rx_under_load() {
 		fi
 		if [ "$active" -ge "$need_active" ]; then
 			ok "survivor/MQ spread: $active active queues (need >=$need_active)"
+		elif [ "$bulk_ok" != 1 ]; then
+			warn "survivor/MQ spread skipped (no bulk traffic to judge)"
 		else
 			bad "survivor/MQ spread weak: only $active active queues (need >=$need_active)"
 		fi
-	elif [ "$expect" -ge 1 ] && [ "$total" -ge "$MIN_RX_DELTA" ]; then
+	elif [ "$expect" -ge 1 ] && [ "$bulk_ok" = 1 ]; then
 		ok "SQ/low-RX: traffic on remaining queue(s) (active=$active)"
 	fi
 
@@ -264,6 +290,8 @@ check_rx_under_load() {
 	if [ "$expect" -gt "$prev" ] && [ "$expect" -ge 2 ]; then
 		if [ "$new_hit" -ge 1 ]; then
 			ok "scale-up: $new_hit new queue(s) (qid>=$prev) got traffic"
+		elif [ "$bulk_ok" != 1 ]; then
+			warn "scale-up new-queue check skipped (no bulk traffic)"
 		else
 			bad "scale-up: no new queue (qid>=$prev) got packets — multi-flow iperf required"
 		fi
