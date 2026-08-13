@@ -7,10 +7,10 @@
 # Stresses J14-7b-class RX-stall risk: ifdown/up, close-under-load, soak,
 # and bounce 1 ↔ mid ↔ max under inbound flood.
 #
-#   sudo IFACE=env9 PEER=192.168.1.153 IBMVETH_KO=/home/ming/ibmveth-build \
-#     EXTERNAL_IPERF=1 ./run_rx_1_all.sh
+# Help: ./suite-help.sh  or  ./run_rx_1_all.sh --help  (SUITE-HELP.txt)
+# Prefer lab.conf; keep peer iperf -t 0 with EXTERNAL_IPERF=1.
 #
-# Keep peer iperf -t 0 running (recommended with EXTERNAL_IPERF=1).
+#   sudo EXTERNAL_IPERF=1 ./run_rx_1_all.sh
 #
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -21,9 +21,8 @@ while [[ $# -gt 0 ]]; do
 			EXTERNAL_IPERF=1
 			shift
 			;;
-		--help|-h)
-			sed -n '2,22p' "$0" | sed 's/^# \?//'
-			exit 0
+		--help|-h|help)
+			exec "$DIR/suite-help.sh" rx1
 			;;
 		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SKIP_*=*|NONINTERACTIVE=*|CHECK_HEALTH=*|ROUNDS=*|BOUNCE_ROUNDS=*|SOAK_SECS=*|T1_ROUNDS=*|MID_RX=*)
 			export "${1?}"

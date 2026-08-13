@@ -15,28 +15,16 @@
 #   ./run_rx_1_all.sh   — MQ firmware forced to ethtool -L rx 1 (not legacy)
 #   ./run_legacy_all.sh — true non-MQ FW (max_rx == 1), e.g. net0
 #
-# Usage (put overrides ON the sudo line — sudo clears prior exports):
-#   sudo IFACE=env9 PEER=192.168.1.153 ./run_mq_all.sh
-#   sudo IFACE=env9 PEER=... IBMVETH_KO=/path/to/ibmveth.ko ./run_mq_all.sh
-#   sudo IFACE=env9 PEER=... EXTERNAL_IPERF=1 ./run_mq_all.sh
-#   sudo IFACE=env9 PEER=... ./run_mq_all.sh --external-iperf
-#   DYNDBG=1 ...              # default: reload with dyndbg=+p before tests
-#   DYNDBG=0 ...              # skip initial debug reload
-#   SKIP_HEAVY=1 ...          # quiet only
-#   SKIP_QUIET=1 ...          # heavy only (still prompts for iperf)
-#   NONINTERACTIVE=1 ...      # no prompts; inbound must already be flowing
-#   SKIP_PARALLEL=1 ...       # skip hang-hunt stress
-#   SKIP_T13=1 ...            # skip T13 (auto only when max_rx==1 = true legacy FW)
-#   EXTERNAL_IPERF=1 ...      # lab owns iperf; de-dupe phase1↔heavy under-RX
-#   T14_CYCLE=quick ...       # default: short T14 (max→1→mid→max→1)
-#   T14_CYCLE=full ...        # exhaustive T14 every integer (slow under load)
-#   LAB_FULL=1 ...            # also run ../test-veth-mq.sh from lab-smoke
-#   SIMPLE_IPERF=1 ...        # one-port long iperf; soft Δ; no multi-queue spread demand
-#   CHECK_HEALTH=1 ...        # default ON: after each test + end summary (mem/softnet/IRQ/stats/CPU)
-#   CHECK_HEALTH=0 ...        # disable health checks
-#   HEALTH_FAIL=1 MEM_GROW_MB=64 HEALTH_UNLOAD=1 HEALTH_CPU=1
-#   HEALTH_ERR_DELTA=100 HEALTH_LOAD_MULT=4 HEALTH_STEAL_PCT=25
-#   MIN_RX_DELTA=10000 MIN_ACTIVE_RX_QUEUES=2 MQ_PROOF_RX=8 ...
+# Help:  ./suite-help.sh   or   ./run_mq_all.sh --help   (see SUITE-HELP.txt)
+# Prefer lab.conf for IFACE/PEER/KO; one-shot knobs OK on the sudo line.
+#
+#   sudo EXTERNAL_IPERF=1 ./run_mq_all.sh
+#   sudo SKIP_PARALLEL=1 T14_CYCLE=full ./run_mq_all.sh
+#   ./run_mq_all.sh --external-iperf
+#
+# Quick knobs: SKIP_HEAVY SKIP_QUIET SKIP_PARALLEL STRESS_SECS T14_CYCLE
+#   EXTERNAL_IPERF DYNDBG SIMPLE_IPERF CHECK_HEALTH LAB_FULL NONINTERACTIVE
+# Full list: SUITE-HELP.txt
 #
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -48,9 +36,8 @@ while [[ $# -gt 0 ]]; do
 			EXTERNAL_IPERF=1
 			shift
 			;;
-		--help|-h)
-			sed -n '2,40p' "$0" | sed 's/^# \?//'
-			exit 0
+		--help|-h|help)
+			exec "$DIR/suite-help.sh" mq
 			;;
 		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SIMPLE_IPERF=*|SKIP_*=*|NONINTERACTIVE=*|MIN_*=*|MQ_*=*|IPERF_*=*|LAB_FULL=*|DUT_IP=*|RESTART_IPERF=*|CHECK_HEALTH=*|CHECK_MEM=*|MEM_GROW_MB=*|MEM_FAIL=*|HEALTH_FAIL=*|HEALTH_UNLOAD=*|T14_CYCLE=*|RX_CYCLE=*|DELAY=*)
 			export "${1?}"

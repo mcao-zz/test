@@ -4,13 +4,11 @@
 # Legacy = PHYP without ILLAN MQ bit. NOT "ethtool -L rx 1" on MQ FW
 # (use run_rx_1_all.sh for that column).
 #
-# Typical lab: IFACE=net0 PEER=<public same-L2 peer>
+# True legacy = PHYP without ILLAN MQ (max_rx==1). Not MQ+ethtool -L rx 1.
+# Help: ./suite-help.sh  or  ./run_legacy_all.sh --help  (SUITE-HELP.txt)
+# Prefer lab.conf legacy profile; leave peer iperf -t 0 with EXTERNAL_IPERF=1.
 #
-#   sudo IFACE=net0 PEER=10.48.36.153 IBMVETH_KO=/home/ming/ibmveth-build \
-#     EXTERNAL_IPERF=1 ./run_legacy_all.sh
-#
-# With EXTERNAL_IPERF=1: leave your iperf -t 0 flood alone (recommended).
-# Without it: quiet-only (no harness-managed flood).
+#   sudo EXTERNAL_IPERF=1 ./run_legacy_all.sh
 #
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -21,9 +19,8 @@ while [[ $# -gt 0 ]]; do
 			EXTERNAL_IPERF=1
 			shift
 			;;
-		--help|-h)
-			sed -n '2,20p' "$0" | sed 's/^# \?//'
-			exit 0
+		--help|-h|help)
+			exec "$DIR/suite-help.sh" legacy
 			;;
 		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SKIP_*=*|NONINTERACTIVE=*|CHECK_HEALTH=*|DOWN_UP_ROUNDS=*|ROUNDS=*)
 			export "${1?}"

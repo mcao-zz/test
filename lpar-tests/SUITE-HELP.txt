@@ -1,0 +1,131 @@
+ibmveth lab suite help
+======================
+
+View this anytime:
+  ./suite-help.sh
+  sudo ./run_mq_all.sh --help
+  sudo ./run_legacy_all.sh --help
+  sudo ./run_rx_1_all.sh --help
+
+Prefer lab.conf for IFACE / PEER / DUT_IP / IBMVETH_KO / iperf knobs.
+Do NOT also pass IFACE= or PEER= on the sudo line (CLI wins; easy wrong-L2).
+One-shot knobs (SKIP_*, T14_CYCLE, EXTERNAL_IPERF, …) on the sudo line are OK.
+
+  cd lpar-tests
+  cp lab.conf.example lab.conf   # gitignored — edit once
+  # traffic: ./iperf-dut.sh  then on peer: ./iperf-peer-recipe.sh run
+
+
+Which suite?
+------------
+
+  run_mq_all.sh       Full MQ (max_rx >= 2). Quiet + inbound gate + heavy.
+                      Alias: run-all.sh
+
+  run_rx_1_all.sh     MQ firmware forced to ethtool -L rx 1 (NOT legacy).
+                      Churn / close / soak / bounce 1↔mid↔max under flood.
+
+  run_legacy_all.sh   True non-MQ PHYP (max_rx == 1), e.g. net0 + public peer.
+                      T13 + SQ-safe quiet. Dies if max_rx != 1.
+
+
+Typical runs (after lab.conf + peer iperf -t 0)
+-----------------------------------------------
+
+  sudo EXTERNAL_IPERF=1 ./run_mq_all.sh
+  sudo EXTERNAL_IPERF=1 ./run_rx_1_all.sh
+  # edit lab.conf to legacy profile (net0 / 10.48.36.x), then:
+  sudo EXTERNAL_IPERF=1 ./run_legacy_all.sh
+
+EXTERNAL_IPERF=1  — lab owns iperf; harness does not start/stop/restart it.
+                    Use IPERF_TIME=0 (forever) on peer for long suites.
+
+
+run_mq_all.sh phases
+--------------------
+
+  0  Dyndbg load (DYNDBG=1 default) — reload with dyndbg=+p
+  1  Quiet/functional — lab-smoke, smoke, stats, channels, reload, …
+     With EXTERNAL_IPERF=1 also runs under-RX coherence here.
+  2  Inbound gate — prove bulk RX (+ MQ spread unless SIMPLE_IPERF)
+  3  Heavy — T14 UNDER_RX, close-mq, parallel-stress, L-under-rx,
+             MQ re-proof between stages
+  4  Cleanup + health summary
+
+run_rx_1_all.sh stages
+----------------------
+
+  Force Current RX=1, then:
+  S1  ifdown/up churn (T1_ROUNDS)
+  S2  close-under-load at RX=1
+  S3  soak (SOAK_SECS) + optional t10/t22
+  S4  bounce 1 ↔ MID_RX ↔ max (BOUNCE_ROUNDS)
+  Leaves Current RX=1 (restore: ethtool -L $IFACE rx $max)
+
+run_legacy_all.sh
+-----------------
+
+  Requires max_rx==1. Runs T13, t12/t22/t10, t23, t21 (RSS unsupported),
+  close-sq. Skips MQ-only (T14, L-cycle, T19 multi-RX, T20 MQ restore).
+
+
+Knobs (sudo KEY=val ./run_….sh  or  ./run_….sh KEY=val)
+------------------------------------------------------
+
+  Shared / MQ (run_mq_all):
+    EXTERNAL_IPERF=1     Lab owns iperf (-E / --external-iperf)
+    DYNDBG=0|1           Initial debug reload (MQ default 1; rx_1 default 0)
+    SKIP_HEAVY=1         Quiet only (no gate + heavy)
+    SKIP_QUIET=1         Heavy only
+    SKIP_PARALLEL=1      Skip parallel-stress.sh hang hunt
+    STRESS_SECS=N        parallel-stress duration (default 300)
+    T14_CYCLE=quick|full Short vs exhaustive T14 under load
+    SKIP_T14=1           Skip T14
+    SKIP_MQ_PROOF=1      Skip MQ under-load re-proofs
+    SIMPLE_IPERF=1       Soft gate; skip MQ-spread + T14
+    NONINTERACTIVE=1     No prompts (set automatically with EXTERNAL_IPERF)
+    CHECK_HEALTH=0|1     Post-test mem/softnet/adapter ALERTs (default 1)
+    HEALTH_FAIL=1        Promote soft health ALERTs to FAIL
+    MEM_GROW_MB=64       MemAvailable soft threshold
+    IBMVETH_KO=/path     .ko or build dir (prefer lab.conf)
+    LAB_FULL=1           Also run root test-veth-mq.sh from lab-smoke
+
+  Fine-grained SKIP_* (MQ): SKIP_LAB SKIP_SMOKE SKIP_T13 SKIP_STATS
+    SKIP_T22 SKIP_T10 SKIP_T11 SKIP_STASH SKIP_T17 SKIP_CHANNELS
+    SKIP_HCALL SKIP_T23 SKIP_T20 SKIP_CLOSE_SQ SKIP_L_CYCLE
+    SKIP_CLOSE_MQ SKIP_L_IPERF
+
+  run_rx_1_all only:
+    ROUNDS / BOUNCE_ROUNDS / SOAK_SECS / T1_ROUNDS / MID_RX
+    SKIP_CHURN SKIP_CLOSE SKIP_SOAK SKIP_BOUNCE SKIP_T10 SKIP_T22
+
+  run_legacy_all only:
+    ROUNDS (close-sq)  SKIP_STATS SKIP_T22 SKIP_T10 SKIP_T23 SKIP_T21 SKIP_CLOSE
+
+
+Traffic helpers
+---------------
+
+  ./iperf-dut.sh              Start DUT iperf3 -s (ports from lab.conf)
+  ./iperf-dut.sh stop
+  ./iperf-peer-recipe.sh      Print peer client recipe
+  ./iperf-peer-recipe.sh run  Start peer clients → DUT_IP (-t from lab.conf)
+
+
+Same-L2 rule
+------------
+
+  PEER must be on the same L2 as IFACE.
+  MQ example:  IFACE=env9  PEER=192.168.1.153  DUT_IP=192.168.1.133
+  Legacy:      IFACE=net0  PEER=10.48.36.153   DUT_IP=10.48.36.x
+  Do not use public peer with env9 (false ping PASSes without -I).
+
+
+More docs
+---------
+
+  ../README.md                 Lab roles, traffic, suite overview
+  ../TEST-PLAN.txt             T1–T21 case list
+  ../TEST-PLAN-DEEP-DIVE.txt   Per-patch deep cases
+  lab.conf.example             Config template
+  head -40 run_mq_all.sh       Script header (knob dump)

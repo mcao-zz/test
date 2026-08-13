@@ -332,7 +332,15 @@ Common one-shot knobs (full list in `run_mq_all.sh` header; no man page):
 | `EXTERNAL_IPERF=1` | Lab owns iperf; harness does not start/stop/restart it |
 | `CHECK_HEALTH=0` | Disable post-test mem/softnet/adapter health ALERTs |
 
-Also: `head -40 lpar-tests/run_mq_all.sh` or `grep '^#' lpar-tests/run_mq_all.sh | head`.
+Help page (suites + knobs; no separate man(1) install):
+
+```bash
+cd lpar-tests
+./suite-help.sh                 # or: ./run_mq_all.sh --help
+./run_legacy_all.sh --help
+./run_rx_1_all.sh --help
+# full text: SUITE-HELP.txt
+```
 
 Piecemeal (same: config in `lab.conf`, only one-shot knobs on CLI):
 
