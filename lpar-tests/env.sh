@@ -52,14 +52,32 @@ need_peer() {
 
 # PEER must answer on $IFACE (same L2 / on-link). Bare ping can PASS via
 # another NIC (lab: PEER=10.48.36.153 while env9 is 192.168.1.x).
+# Retries: under UNDER_RX a single ICMP is often lost even when L2 is fine
+# (lab: assert_peer OK then rx_queue_size -c 1 died on the next probe).
+peer_reachable_via_iface() {
+	local tries=${1:-8}
+	local i
+
+	need_peer
+	for i in $(seq 1 "$tries"); do
+		if ping -I "$IFACE" -c 1 -W 1 "$PEER" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 0.25
+	done
+	return 1
+}
+
 assert_peer_on_iface() {
 	local addr
 
 	need_peer
 	addr=$(save_iface_ipv4 2>/dev/null || true)
-	if ! ping -I "$IFACE" -c 1 -W 2 "$PEER" >/dev/null 2>&1; then
+	if ! peer_reachable_via_iface 8; then
 		die "PEER=$PEER not reachable via ping -I $IFACE (addr=${addr:-none}). Use a peer on the same L2 as $IFACE (lab env9: PEER=192.168.1.153), not a mgmt/other-NIC address"
 	fi
+	# Skip the duplicate probe inside rx_queue_size.sh when T14 already checked.
+	export PEER_ON_IFACE_OK=1
 	ok "PEER=$PEER on-link via -I $IFACE${addr:+ ($addr)}"
 }
 

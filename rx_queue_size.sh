@@ -435,10 +435,21 @@ dmesg_mark
 snap_errors
 
 # Fail fast if PEER is only reachable via another NIC (bare ping lies).
-if [ -n "$PEER" ]; then
-	if ! ping -I "$IFACE" -c 1 -W 2 "$PEER" >/dev/null 2>&1; then
+# Skip when T14/run-all already asserted (PEER_ON_IFACE_OK=1). Retry: a
+# lone ping -c 1 under iperf often loses one ICMP on a good same-L2 peer.
+if [ -n "$PEER" ] && [ "${PEER_ON_IFACE_OK:-0}" != 1 ]; then
+	_peer_ok=0
+	for _i in 1 2 3 4 5 6 7 8; do
+		if ping -I "$IFACE" -c 1 -W 1 "$PEER" >/dev/null 2>&1; then
+			_peer_ok=1
+			break
+		fi
+		sleep 0.25
+	done
+	if [ "$_peer_ok" != 1 ]; then
 		die "PEER=$PEER not reachable via ping -I $IFACE (same-L2 peer required; lab env9: 192.168.1.153)"
 	fi
+	unset _peer_ok _i
 fi
 
 # Mid point for quick cycle (prefer 4 when max>=4 so MQ spread still applies).
