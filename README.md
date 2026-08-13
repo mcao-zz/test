@@ -268,38 +268,33 @@ sudo IFACE=net0 PEER=10.48.36.153 EXTERNAL_IPERF=1 IBMVETH_KO=... \
 4. **Cleanup** — stop only iperf servers this run started; final ping
 
 ```bash
-sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh
-sudo IFACE=env9 PEER=192.168.100.2 IBMVETH_KO=/home/ming/ibmveth-build ./run-all.sh
-sudo IFACE=env9 PEER=192.168.100.2 EXTERNAL_IPERF=1 ./run-all.sh
-sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh --external-iperf
-sudo IFACE=env9 PEER=192.168.100.2 CHECK_HEALTH=0 ./run-all.sh   # disable health
-sudo IFACE=env9 PEER=192.168.100.2 ./run-all.sh --check-health   # explicit (default on)
-# (vars must be on the sudo line, or pass as args — sudo drops prior exports)
-sudo IFACE=env9 PEER=192.168.100.2 DYNDBG=1 ./run-all.sh          # default
-sudo IFACE=env9 PEER=192.168.100.2 DYNDBG=0 ./run-all.sh          # no phase-0 reload
-sudo IFACE=env9 PEER=192.168.100.2 SIMPLE_IPERF=1 ./run-all.sh    # one-port soft under-load
-sudo IFACE=env9 PEER=192.168.100.2 LAB_FULL=1 ./run-all.sh        # + test-veth-mq.sh
-sudo IFACE=env9 PEER=192.168.100.2 SKIP_HEAVY=1 ./run-all.sh
-sudo IFACE=env9 PEER=192.168.100.2 SKIP_QUIET=1 ./run-all.sh
-sudo IFACE=env9 PEER=192.168.100.2 NONINTERACTIVE=1 ./run-all.sh
-sudo IFACE=env9 PEER=192.168.100.2 SKIP_PARALLEL=1 ./run-all.sh
+# MQ suite knobs (run_mq_all.sh; run-all.sh is an alias)
+sudo IFACE=env9 PEER=192.168.1.153 ./run_mq_all.sh
+sudo IFACE=env9 PEER=192.168.1.153 IBMVETH_KO=/home/ming/ibmveth-build ./run_mq_all.sh
+sudo IFACE=env9 PEER=192.168.1.153 EXTERNAL_IPERF=1 ./run_mq_all.sh
+sudo IFACE=env9 PEER=192.168.1.153 ./run_mq_all.sh --external-iperf
+sudo IFACE=env9 PEER=192.168.1.153 CHECK_HEALTH=0 ./run_mq_all.sh
+sudo IFACE=env9 PEER=192.168.1.153 DYNDBG=0 ./run_mq_all.sh
+sudo IFACE=env9 PEER=192.168.1.153 T14_CYCLE=full EXTERNAL_IPERF=1 ./run_mq_all.sh
+sudo IFACE=env9 PEER=192.168.1.153 SKIP_HEAVY=1 ./run_mq_all.sh
+# MQ+RX=1 / legacy (see block above): ./run_rx_1_all.sh  ./run_legacy_all.sh
 ```
 
 Piecemeal (same `sudo VAR=...` pattern):
 
 ```bash
-sudo IFACE=env9 PEER=192.168.100.2 ./smoke.sh
-sudo IFACE=env9 PEER=192.168.100.2 ./t10-stats-lifetime.sh
-sudo IFACE=env9 PEER=192.168.100.2 ./t11-debugfs-geometry.sh
-sudo IFACE=env9 PEER=192.168.100.2 ./t12-stats-debugfs.sh
-sudo IFACE=env9 PEER=192.168.100.2 ./t22-stats-coherence.sh
-sudo IFACE=env9 UNDER_RX=1 ./t22-stats-coherence.sh
-sudo IFACE=env9 PEER=192.168.100.2 ./t8-down-stash.sh
-sudo IFACE=env9 PEER=192.168.100.2 ./t17-down-no-live-irqs.sh
-sudo IFACE=env9 PEER=192.168.100.2 ./t19-set-channels.sh
-sudo IFACE=env9 PEER=192.168.100.2 TX_SET=2 ./t19-set-channels.sh
-sudo IFACE=env9 PEER=192.168.100.2 ./t21-rss-hfunc.sh
-sudo IFACE=env9 PEER=192.168.100.2 ./t20-reload-restore-mq.sh
-sudo IFACE=env9 PEER=192.168.100.2 ./t16-hcall-deltas.sh
-sudo IFACE=env9 PEER=192.168.100.2 LAB_FULL=1 ./lab-smoke.sh
+sudo IFACE=env9 PEER=192.168.1.153 ./smoke.sh
+sudo IFACE=env9 PEER=192.168.1.153 ./t10-stats-lifetime.sh
+sudo IFACE=env9 PEER=192.168.1.153 ./t11-debugfs-geometry.sh
+sudo IFACE=env9 PEER=192.168.1.153 ./t12-stats-debugfs.sh
+sudo IFACE=env9 PEER=192.168.1.153 ./t22-stats-coherence.sh
+sudo IFACE=env9 PEER=192.168.1.153 UNDER_RX=1 ./t22-stats-coherence.sh
+sudo IFACE=env9 PEER=192.168.1.153 ./t8-down-stash.sh
+sudo IFACE=env9 PEER=192.168.1.153 ./t17-down-no-live-irqs.sh
+sudo IFACE=env9 PEER=192.168.1.153 ./t19-set-channels.sh
+sudo IFACE=env9 PEER=192.168.1.153 TX_SET=2 ./t19-set-channels.sh
+sudo IFACE=env9 PEER=192.168.1.153 ./t21-rss-hfunc.sh
+sudo IFACE=env9 PEER=192.168.1.153 ./t20-reload-restore-mq.sh
+sudo IFACE=env9 PEER=192.168.1.153 ./t16-hcall-deltas.sh
+sudo IFACE=env9 PEER=192.168.1.153 LAB_FULL=1 ./lab-smoke.sh
 ```
