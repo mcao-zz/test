@@ -1,7 +1,7 @@
 #!/bin/bash
 # T21 / P15 — RSS hash algorithm via ethtool get_rxfh / set_rxfh
 #
-# Quiet (default): get/set crc32|xor, reject key/indir/toeplitz, ping.
+# Quiet (default): get/set murmur|additive, reject key/indir/toeplitz, ping.
 # UNDER_RX=1: under proven inbound traffic, switch hfunc and require:
 #   - bulk + MQ spread still proven
 #   - error counters (invalid/no_buffer/replenish_fail) within MAX_ERR_DELTA
@@ -98,13 +98,13 @@ if [[ "$UNDER_RX" = 1 ]]; then
 	explain_rss_rxfh
 
 	orig=$(current_rss_hfunc)
-	[[ "$orig" == "crc32" || "$orig" == "xor" ]] || \
-		die "unexpected hfunc='$orig' (want crc32 or xor)"
+	[[ "$orig" == "murmur" || "$orig" == "additive" ]] || \
+		die "unexpected hfunc='$orig' (want murmur or additive)"
 	ok "starting hfunc=$orig under traffic"
 
-	# Pick the other alias if possible; else re-set same (still validates path).
-	other=xor
-	[[ "$orig" == "xor" ]] && other=crc32
+	# Pick the other algorithm if possible; else re-set same (still validates path).
+	other=additive
+	[[ "$orig" == "additive" ]] && other=murmur
 
 	prove_mq_rx_under_load "t21-before-switch"
 	sample_queue_deltas "t21-before-$orig" "$LOGDIR/t21-qdelta-before.txt"
@@ -170,12 +170,12 @@ explain_rss_rxfh "$LOGDIR/t21-rxfh-before.txt" "$LOGDIR/t21-rxfh-before.err"
 
 orig=$(current_rss_hfunc)
 [[ -n "$orig" ]] || die "could not parse RSS hash function from ethtool -x"
-[[ "$orig" == "crc32" || "$orig" == "xor" ]] || \
-	die "unexpected hfunc='$orig' (want crc32 or xor alias)"
-ok "current hfunc=$orig (PHYP Murmur↔crc32 / Additive↔xor)"
+[[ "$orig" == "murmur" || "$orig" == "additive" ]] || \
+	die "unexpected hfunc='$orig' (want murmur or additive)"
+ok "current hfunc=$orig (PHYP Murmur3 / Additive)"
 
 set_ok=0
-for want in crc32 xor; do
+for want in murmur additive; do
 	log "ethtool -X $IFACE hfunc $want"
 	if ethtool -X "$IFACE" hfunc "$want" \
 		>"$LOGDIR/t21-set-$want.out" 2>"$LOGDIR/t21-set-$want.err"; then
@@ -196,7 +196,7 @@ for want in crc32 xor; do
 		fi
 	fi
 done
-[[ "$set_ok" -ge 1 ]] || die "neither crc32 nor xor could be set"
+[[ "$set_ok" -ge 1 ]] || die "neither murmur nor additive could be set"
 ok "at least one hfunc set succeeded ($set_ok)"
 
 cur=$(current_rss_hfunc)
@@ -221,9 +221,16 @@ ok "hkey rejected: $(tr '\n' ' ' <"$LOGDIR/t21-hkey.err" | head -c 120)"
 log "reject unsupported hfunc (toeplitz)"
 if ethtool -X "$IFACE" hfunc toeplitz \
 	>"$LOGDIR/t21-toeplitz.out" 2>"$LOGDIR/t21-toeplitz.err"; then
-	die "ethtool -X hfunc toeplitz succeeded (only crc32/xor aliases)"
+	die "ethtool -X hfunc toeplitz succeeded (only murmur/additive)"
 fi
 ok "toeplitz rejected"
+
+log "reject stale crc32 alias (must not map Murmur to crc32)"
+if ethtool -X "$IFACE" hfunc crc32 \
+	>"$LOGDIR/t21-crc32.out" 2>"$LOGDIR/t21-crc32.err"; then
+	die "ethtool -X hfunc crc32 succeeded (must be murmur, not crc32 alias)"
+fi
+ok "crc32 alias rejected"
 
 assert_rx_geometry 4
 ping_ok

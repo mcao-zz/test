@@ -256,8 +256,8 @@ current_tx() {
 	'
 }
 
-# Parse active RSS hash function from `ethtool -x` (P15 aliases: crc32|xor).
-# Prints one of: crc32, xor, toeplitz, or empty if unparseable.
+# Parse active RSS hash function from `ethtool -x`.
+# Prints one of: murmur, additive, toeplitz, xor, crc32, or empty if unparseable.
 current_rss_hfunc() {
 	ethtool -x "$IFACE" 2>/dev/null | awk '
 		BEGIN { IGNORECASE = 1 }
@@ -275,9 +275,9 @@ current_rss_hfunc() {
 }
 
 # Decode noisy `ethtool -x` into a short ibmveth-oriented summary.
-# Ethtool always prints indir/key sections and the full toeplitz/xor/crc32
+# Ethtool always prints indir/key sections and the full hash-function
 # menu; for ibmveth those "Operation not supported" / toeplitz:off lines are
-# expected (PHYP-managed key/indir; only crc32|xor aliases are used).
+# expected (PHYP-managed key/indir; only murmur|additive are used).
 explain_rss_rxfh() {
 	local out=${1:-}
 	local err=${2:-}
@@ -311,9 +311,10 @@ explain_rss_rxfh() {
 	' "$out")
 
 	case "$hfunc" in
-		crc32) phyp="Murmur (ethtool alias crc32)" ;;
-		xor)   phyp="Additive (ethtool alias xor)" ;;
-		*)     phyp="unknown/unset" ;;
+		murmur)    phyp="Murmur3" ;;
+		additive)  phyp="Additive" ;;
+		crc32|xor) phyp="stale crc32/xor alias (driver should use murmur/additive)" ;;
+		*)         phyp="unknown/unset" ;;
 	esac
 
 	log "RSS decode ($IFACE):"
@@ -322,7 +323,7 @@ explain_rss_rxfh() {
 	log "  indir table / hash key: hypervisor-managed (ethtool prints"
 	log "    'Operation not supported' — expected, not a failure)"
 	log "  toeplitz listed off: ethtool's generic menu; ibmveth only"
-	log "    uses crc32|xor aliases — ignore toeplitz"
+	log "    uses murmur|additive — ignore toeplitz/crc32/xor"
 }
 
 # Fail unless published RX / -S rows / IRQ lines all match N

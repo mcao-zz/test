@@ -40,7 +40,9 @@ v4 deltas to validate (beyond v3 plan)
 * set_channels TX+RX while up/down (P12/P13 wiring)
 * queue0 IRQ ownership remains with netdev->irq; only subordinate virqs are
   created/disposed across MQ register/resize/close paths
-* P15: ethtool -x/-X expose PHYP MQ hash algo (crc32↔Murmur, xor↔Additive);
+* P15: ethtool -x/-X expose PHYP MQ hash algo (murmur / additive);
+  key/indir stay hypervisor-managed. Needs kernel ETH_RSS_HASH_MURMUR /
+  ETH_RSS_HASH_ADDITIVE plus userspace ethtool that reads ETH_SS_RSS_HASH_FUNCS.
   key and indirection stay hypervisor-managed (-EOPNOTSUPP); non-MQ FW rejects
 
 Prerequisites
