@@ -1,12 +1,15 @@
 #!/bin/bash
-# T22 — stats coherence: ethtool -S per-queue vs ip/proc, optional sar
+# T22 — stats coherence: ndo_get_stats64 (sysfs / ip / proc), optional sar
 #
 # Checks that reports "make sense":
-#   - sum(rxN_packets) ≈ ip -s link / /proc/net/dev RX packets
-#   - sum(txN_packets) ≈ TX packets (when txN rows exist)
+#   - sysfs rx_packets ≈ ip -s link / /proc/net/dev RX packets
+#   - same for TX
 #   - counters are monotonic over a short sample
 #   - under traffic (UNDER_RX=1 or EXTERNAL_IPERF): Δ aligns across sources
+#   - sum(rxN_invalid_buffers) ≈ rx_invalid_buffer when present
 #   - optional sar -n DEV sample if sar is installed
+#
+# v6: packets/bytes/drops are netdev_stat_ops, not ethtool -S rxN_packets.
 #
 #   sudo IFACE=env9 PEER=192.168.100.2 ./t22-stats-coherence.sh
 #   sudo IFACE=env9 UNDER_RX=1 ./t22-stats-coherence.sh
@@ -28,21 +31,6 @@ save_dmesg_mark
 iface_up
 
 log "=== T22 stats coherence on $IFACE (UNDER_RX=$UNDER_RX EXTERNAL_IPERF=${EXTERNAL_IPERF:-0}) ==="
-
-# --- helpers ---
-sum_ethtool_rx_packets() {
-	ethtool -S "$IFACE" 2>/dev/null | awk '
-		/^[[:space:]]*rx[0-9]+_packets:/ { s += $2 }
-		END { print s+0 }
-	'
-}
-
-sum_ethtool_tx_packets() {
-	ethtool -S "$IFACE" 2>/dev/null | awk '
-		/^[[:space:]]*tx[0-9]+_packets:/ { s += $2 }
-		END { print s+0 }
-	'
-}
 
 # ip -s link (iproute2): after "RX:" / "TX:" header, columns are
 #   bytes packets errors ...  — packets is $2, not $1 (bytes).
@@ -140,31 +128,26 @@ compare_pair() {
 snap_soft=0
 [[ "$UNDER_RX" = 1 || "${EXTERNAL_IPERF:-0}" = 1 ]] && snap_soft=1
 
-# --- static coherence snapshot ---
-rx_q=$(sum_ethtool_rx_packets)
+# --- static coherence snapshot (ndo_get_stats64 via three uAPIs) ---
+rx_sys=$(sum_rx_packets)
 rx_ip=$(ip_link_rx_packets)
 rx_proc=$(proc_netdev_rx_packets)
-rx_q=${rx_q:-0}; rx_ip=${rx_ip:-0}; rx_proc=${rx_proc:-0}
+rx_sys=${rx_sys:-0}; rx_ip=${rx_ip:-0}; rx_proc=${rx_proc:-0}
 
-log "snapshot RX: ethtool_sum(rxN)=$rx_q  ip_link=$rx_ip  proc_net_dev=$rx_proc"
-[[ "$rx_q" -gt 0 || "$rx_ip" -gt 0 ]] || warn "all RX totals 0 (quiet iface — under-traffic checks may soft-skip)"
+log "snapshot RX: sysfs=$rx_sys  ip_link=$rx_ip  proc_net_dev=$rx_proc"
+[[ "$rx_sys" -gt 0 || "$rx_ip" -gt 0 ]] || warn "all RX totals 0 (quiet iface — under-traffic checks may soft-skip)"
 
-compare_pair "ethtool_sum(rxN) vs ip -s link RX" "$rx_q" "$rx_ip" "$snap_soft"
-compare_pair "ethtool_sum(rxN) vs /proc/net/dev RX" "$rx_q" "$rx_proc" "$snap_soft"
+compare_pair "sysfs rx_packets vs ip -s link RX" "$rx_sys" "$rx_ip" "$snap_soft"
+compare_pair "sysfs rx_packets vs /proc/net/dev RX" "$rx_sys" "$rx_proc" "$snap_soft"
 compare_pair "ip -s link RX vs /proc/net/dev RX" "$rx_ip" "$rx_proc" "$snap_soft"
 
-tx_rows=$(count_tx_stat_rows)
-tx_q=$(sum_ethtool_tx_packets)
+tx_sys=$(sum_tx_packets)
 tx_ip=$(ip_link_tx_packets)
 tx_proc=$(proc_netdev_tx_packets)
-tx_q=${tx_q:-0}; tx_ip=${tx_ip:-0}; tx_proc=${tx_proc:-0}
-if [[ "${tx_rows:-0}" -ge 1 ]]; then
-	log "snapshot TX: ethtool_sum(txN)=$tx_q  ip_link=$tx_ip  proc_net_dev=$tx_proc (rows=$tx_rows)"
-	compare_pair "ethtool_sum(txN) vs ip -s link TX" "$tx_q" "$tx_ip" "$snap_soft"
-	compare_pair "ethtool_sum(txN) vs /proc/net/dev TX" "$tx_q" "$tx_proc" "$snap_soft"
-else
-	log "no txN_packets rows — skip TX per-queue coherence"
-fi
+tx_sys=${tx_sys:-0}; tx_ip=${tx_ip:-0}; tx_proc=${tx_proc:-0}
+log "snapshot TX: sysfs=$tx_sys  ip_link=$tx_ip  proc_net_dev=$tx_proc"
+compare_pair "sysfs tx_packets vs ip -s link TX" "$tx_sys" "$tx_ip" "$snap_soft"
+compare_pair "sysfs tx_packets vs /proc/net/dev TX" "$tx_sys" "$tx_proc" "$snap_soft"
 
 # Aggregate invalid: sum(rxN_invalid_buffers) vs rx_invalid_buffer if present
 inv_agg=$(stat_val rx_invalid_buffer)
@@ -180,29 +163,29 @@ fi
 
 # --- monotonic sample ---
 log "monotonic sample ${STATS_SAMPLE_SECS}s..."
-a_q=$(sum_ethtool_rx_packets)
+a_sys=$(sum_rx_packets)
 a_ip=$(ip_link_rx_packets)
 sleep "$STATS_SAMPLE_SECS"
-b_q=$(sum_ethtool_rx_packets)
+b_sys=$(sum_rx_packets)
 b_ip=$(ip_link_rx_packets)
-d_q=$((b_q - a_q))
+d_sys=$((b_sys - a_sys))
 d_ip=$((b_ip - a_ip))
-log "RX Δ over ${STATS_SAMPLE_SECS}s: ethtool_sum=$d_q  ip_link=$d_ip"
-[[ "$d_q" -ge 0 && "$d_ip" -ge 0 ]] || die "RX counters went backwards (ethtool Δ=$d_q ip Δ=$d_ip)"
+log "RX Δ over ${STATS_SAMPLE_SECS}s: sysfs=$d_sys  ip_link=$d_ip"
+[[ "$d_sys" -ge 0 && "$d_ip" -ge 0 ]] || die "RX counters went backwards (sysfs Δ=$d_sys ip Δ=$d_ip)"
 ok "RX counters monotonic"
 
 # Bulk Δ only when UNDER_RX=1 (heavy phase). EXTERNAL_IPERF alone does not
 # force it — phase-1 may run before the inbound gate.
 if [[ "$UNDER_RX" = 1 ]]; then
 	min_d=${MIN_RX_DELTA:-100}
-	[[ "$d_q" -ge "$min_d" || "$d_ip" -ge "$min_d" ]] || \
-		die "under-traffic expected Δ>=$min_d over ${STATS_SAMPLE_SECS}s (ethtool=$d_q ip=$d_ip)"
-	compare_pair "RX Δ ethtool_sum vs ip -s link" "$d_q" "$d_ip"
+	[[ "$d_sys" -ge "$min_d" || "$d_ip" -ge "$min_d" ]] || \
+		die "under-traffic expected Δ>=$min_d over ${STATS_SAMPLE_SECS}s (sysfs=$d_sys ip=$d_ip)"
+	compare_pair "RX Δ sysfs vs ip -s link" "$d_sys" "$d_ip"
 	ok "under-traffic Δ coherent (min $min_d)"
 else
 	# Still compare Δ when both moved (quiet can see stray packets).
-	if [[ "$d_q" -gt 0 || "$d_ip" -gt 0 ]]; then
-		compare_pair "RX Δ ethtool_sum vs ip -s link" "$d_q" "$d_ip"
+	if [[ "$d_sys" -gt 0 || "$d_ip" -gt 0 ]]; then
+		compare_pair "RX Δ sysfs vs ip -s link" "$d_sys" "$d_ip"
 	fi
 	log "UNDER_RX=0 — not requiring bulk Δ (static coherence only)"
 fi
@@ -211,11 +194,10 @@ fi
 if command -v sar >/dev/null 2>&1; then
 	sar_secs=$((STATS_SAMPLE_SECS < 3 ? 3 : STATS_SAMPLE_SECS))
 	log "sar -n DEV $sar_secs 1 (iface $IFACE)..."
-	# Capture before/after via ethtool for comparison; sar average rxpck/s
-	a_q=$(sum_ethtool_rx_packets)
+	a_sys=$(sum_rx_packets)
 	sar_out=$(sar -n DEV "$sar_secs" 1 2>/dev/null | tee "$LOGDIR/t22-sar.txt" || true)
-	b_q=$(sum_ethtool_rx_packets)
-	d_q=$((b_q - a_q))
+	b_sys=$(sum_rx_packets)
+	d_sys=$((b_sys - a_sys))
 	# Average rxpck/s for IFACE from sar (Average line or last matching)
 	rxpck=$(awk -v ifc="$IFACE" '
 		$0 ~ ifc && $3 ~ /^[0-9.]+$/ { v=$3 }
@@ -223,12 +205,12 @@ if command -v sar >/dev/null 2>&1; then
 	' <<<"$sar_out")
 	# Expected packets ≈ rxpck/s * secs (rough)
 	expect=$(awk -v r="$rxpck" -v s="$sar_secs" 'BEGIN { printf "%d", r*s + 0.5 }')
-	log "sar rxpck/s≈$rxpck → expect≈$expect pkts; ethtool Δ=$d_q"
+	log "sar rxpck/s≈$rxpck → expect≈$expect pkts; sysfs Δ=$d_sys"
 	if [[ "$UNDER_RX" = 1 && "$(awk -v r="$rxpck" 'BEGIN{print (r>0)?1:0}')" = 1 ]]; then
-		compare_pair "sar-implied RX vs ethtool Δ" "$expect" "$d_q"
-		ok "sar -n DEV coherent with ethtool Δ"
+		compare_pair "sar-implied RX vs sysfs Δ" "$expect" "$d_sys"
+		ok "sar -n DEV coherent with sysfs Δ"
 	else
-		ok "sar ran (soft compare; rxpck/s=$rxpck ethtoolΔ=$d_q)"
+		ok "sar ran (soft compare; rxpck/s=$rxpck sysfsΔ=$d_sys)"
 	fi
 else
 	log "sar not installed — skip sar coherence (optional)"

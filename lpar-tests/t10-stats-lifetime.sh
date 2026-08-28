@@ -23,7 +23,7 @@ assert_rx_geometry "$RX"
 
 ethtool -S "$IFACE" >"$LOGDIR/t10-stats-up.txt" || die "ethtool -S failed while UP"
 rows_up=$(count_rx_stat_rows)
-[[ "$rows_up" == "$RX" ]] || die "UP rx*_packets rows=$rows_up want $RX"
+[[ "$rows_up" == "$RX" ]] || die "UP rx*_interrupts rows=$rows_up want $RX"
 ok "ethtool -S readable while UP (rows=$rows_up)"
 
 iface_down
@@ -32,10 +32,10 @@ if ! ethtool -S "$IFACE" >"$LOGDIR/t10-stats-down.txt" 2>"$LOGDIR/t10-stats-down
 	die "ethtool -S failed while DOWN (see $LOGDIR/t10-stats-down.err)"
 fi
 # Rows may still reflect last published geometry while adapter alive
-rows_down=$(grep -cE '^[[:space:]]*rx[0-9]+_packets:' "$LOGDIR/t10-stats-down.txt") || true
+rows_down=$(grep -cE '^[[:space:]]*rx[0-9]+_interrupts:' "$LOGDIR/t10-stats-down.txt") || true
 rows_down=${rows_down:-0}
-[[ "$rows_down" -ge 1 ]] || die "DOWN: no rx*_packets rows (corrupt/empty stats)"
-ok "ethtool -S readable while DOWN (rx*_packets rows=$rows_down)"
+[[ "$rows_down" -ge 1 ]] || die "DOWN: no rx*_interrupts rows (corrupt/empty stats)"
+ok "ethtool -S readable while DOWN (rx*_interrupts rows=$rows_down)"
 
 # Spot-check a few named counters remain parseable
 for s in rx_invalid_buffer rx_no_buffer replenish_add_buff_success; do

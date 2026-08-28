@@ -127,7 +127,7 @@ done
 Many TCP flows help PHYP RX hashing. Watch on DUT:
 
 ```bash
-watch -n1 'ethtool -S env9 | grep -E "rx[0-9]+_packets"'
+watch -n1 'ethtool -S env9 | grep -E "rx[0-9]+_interrupts"'
 ```
 
 ### 4. Run suites (lab owns iperf)
@@ -161,12 +161,12 @@ After **each** step it checks:
 | Check | Why |
 |-------|-----|
 | `ethtool -l` RX count | Published queue count |
-| `ethtool -S` `rxN_packets` rows | Per-queue stats match |
+| `ethtool -S` `rxN_interrupts` rows | Per-queue extras match geometry |
 | `/proc/interrupts` lines for iface | IRQ count matches RX |
 | `sysfs` `queues/rx-*` | Kernel RX queue objects |
 | iface `UP` | Link still usable |
 | `rx_invalid` / `rx_no_buffer` / replenish fail | Error counters |
-| `rx*_packets` snapshot | Distribution under iperf |
+| sysfs `rx_packets` + `rxN_interrupts` Δ | Distribution under iperf |
 | dmesg delta | “Successfully resized…”, no Oops/BUG |
 | optional `PEER` ping | Connectivity after resize |
 
@@ -204,7 +204,7 @@ Reload in those scripts (and `lpar-tests/`) honors `IBMVETH_KO=/path/to/ibmveth.
 `/sys/module/ibmveth/srcversion`. Do not trust bare `modprobe` on labs with
 backup `.ko` copies — smoke/T1 will FAIL if the wrong module is loaded.
 
-Smoke/T1 also gates **debugfs `buffer_pools`** (Size kept across ifdown;
+Smoke/T1 also gates **debugfs `buffer_pools`** (Count kept across ifdown;
 Active+Available when up) and **`ping -I $IFACE`** with an RX counter Δ
 (so TX-only / other-NIC routes cannot fake PASS).
 

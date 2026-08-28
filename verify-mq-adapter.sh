@@ -323,10 +323,9 @@ check_queue_stats() {
         return 0
     fi
 
-    # Check for per-queue RX stats (rx0_packets, rx1_packets, etc.)
-    local rx_stats=$(ethtool -S "$DEVICE" 2>/dev/null | grep -E "rx[0-9]+_packets")
-    # Check for per-queue TX stats (tx0_packets, tx1_packets, etc.)
-    local tx_stats=$(ethtool -S "$DEVICE" 2>/dev/null | grep -E "tx[0-9]+_packets")
+    # Check for per-queue RX extras (rx0_interrupts, … — v6 has no rxN_packets)
+    local rx_stats=$(ethtool -S "$DEVICE" 2>/dev/null | grep -E "rx[0-9]+_interrupts")
+    local tx_stats=$(ethtool -S "$DEVICE" 2>/dev/null | grep -E "tx[0-9]+_send_failures")
 
     if [ -z "$rx_stats" ] && [ -z "$tx_stats" ]; then
         print_warn "No per-queue statistics available"

@@ -1,8 +1,9 @@
-ibmveth MQ v4 — Deep-dive test plan by patch
-============================================
-Tip: 7e14b04f6649 (15 patches after 805185b7c7a1)
-Branch: veth-mq-upstream-netnext-v4-review
-Companion: TEST-PLAN.txt (T1–T21), lpar-tests/
+ibmveth MQ — Deep-dive test plan by patch
+=========================================
+Historical v4 cases (D01–D15). Live harness is v6: SERIES.md / TEST-PLAN.txt.
+v6 ethtool -S dropped hcall_* and rxN_packets (use sysfs + rxN_interrupts).
+Tip: 86afcb13035a veth-mq-v6-squash (15 patches after 805185b7c7a1)
+Companion: TEST-PLAN.txt (T1–T23), lpar-tests/
 
 How to use
 ----------

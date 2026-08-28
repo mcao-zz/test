@@ -3,7 +3,7 @@
 #
 # Gates (lab regressions):
 #   - ping uses -I $IFACE (no fake PASS via another NIC)
-#   - after ifdown/up: debugfs Size kept + Active when up
+#   - after ifdown/up: debugfs Count kept + Active when up
 #   - RX counters must move on successful ping
 #   - IBMVETH_KO srcversion must match loaded module when set
 #

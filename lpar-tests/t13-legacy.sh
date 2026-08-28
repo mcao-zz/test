@@ -104,16 +104,16 @@ else
 	log "WARN: pool0 sysfs not found (check: ls /sys/class/net/$IFACE/pool*)"
 fi
 
-ip_a=$(ip -s link show "$IFACE" | awk '/RX:/{getline; print $1; exit}')
+ip_a=$(sum_rx_packets)
 ping -I "$IFACE" -c 20 -W 1 "$PEER" >/dev/null || die "ping burst -I $IFACE failed"
-ip_b=$(ip -s link show "$IFACE" | awk '/RX:/{getline; print $1; exit}')
+ip_b=$(sum_rx_packets)
 d=$((ip_b - ip_a))
 [[ "$d" -ge 10 ]] || die "RX counters did not advance (Δ=$d)"
 ok "RX counters advance under ping (Δ=$d)"
 
 rows=$(count_rx_stat_rows)
-[[ "$rows" -eq 1 ]] || die "rx*_packets rows=$rows want 1"
-ok "ethtool -S rx*_packets rows=1"
+[[ "$rows" -eq 1 ]] || die "rx*_interrupts rows=$rows want 1"
+ok "ethtool -S rx*_interrupts rows=1"
 ethtool -S "$IFACE" >"$LOGDIR/t13-stats.txt" || die "ethtool -S failed"
 
 cmo=$(find /sys/bus/vio/devices -name cmo_entitled 2>/dev/null | head -1 || true)

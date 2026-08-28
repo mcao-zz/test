@@ -156,19 +156,12 @@ capture_stats_delta() {
         # Key stats to track
         # Names match drivers/net/ethernet/ibm/ibmveth.c ibmveth_stats[]
         local stats=(
-            "hcall_reg_lan_queue"
-            "hcall_reg_lan"
-            "hcall_add_bufs_queue"
-            "hcall_add_bufs"
-            "hcall_add_buf"
-            "hcall_free_lan_queue"
-            "hcall_free_lan"
-            "hcall_send_lan"
             "replenish_add_buff_success"
             "replenish_add_buff_failure"
             "replenish_no_mem"
             "tx_send_failed"
             "rx_invalid_buffer"
+            "rx_no_buffer"
         )
 
         echo "Hypercall & Error Counters:"
@@ -185,9 +178,9 @@ capture_stats_delta() {
         done
 
         echo ""
-        echo "Per-Queue RX Packets:"
+        echo "Per-Queue RX interrupts (v6; packets are ndo_get_stats64):"
         for i in {0..15}; do
-            local stat="rx${i}_packets"
+            local stat="rx${i}_interrupts"
             local before=$(get_stat_value "$before_file" "$stat")
             local after=$(get_stat_value "$after_file" "$stat")
             before=${before:-0}
@@ -388,8 +381,7 @@ get_iface_stat() {
     ip -s link show "$INTERFACE" | grep -A1 "$direction:" | tail -1 | awk "{print \$$field}"
 }
 
-# Function to get specific stat from ethtool output (v4 names).
-# Exact key match so hcall_reg_lan does not also hit hcall_reg_lan_queue.
+# Exact key match (name: at start of field).
 get_stat_value() {
     local stat_file=$1
     local stat_name=$2
@@ -924,24 +916,24 @@ log ""
 log "=== 16. Final Statistics ==="
 ethtool -S "$INTERFACE" > "$STATS_FINAL"
 log "Final Per-Queue Statistics:"
-grep -E "^rx[0-9]+_packets:" "$STATS_FINAL" | tee -a "$LOG_FILE"
+grep -E "^[[:space:]]*rx[0-9]+_interrupts:" "$STATS_FINAL" | tee -a "$LOG_FILE"
 log ""
 
-# Test 13: Hypercall Validation (v4 ethtool names)
-log "=== 17. Hypercall Validation ==="
-H_REG_QUEUE=$(get_stat_value "$STATS_FINAL" "hcall_reg_lan_queue")
-H_REG_LAN=$(get_stat_value "$STATS_FINAL" "hcall_reg_lan")
+# Test 13: v6 ethtool extras still present (hcall_* dropped)
+log "=== 17. Adapter stats validation ==="
+REP_OK=$(get_stat_value "$STATS_FINAL" "replenish_add_buff_success")
+RX_IRQ0=$(get_stat_value "$STATS_FINAL" "rx0_interrupts")
 
-log "Hypercall usage:"
-log "  hcall_reg_lan_queue: $H_REG_QUEUE (subordinate MQ registers)"
-log "  hcall_reg_lan: $H_REG_LAN (queue 0 / LAN register)"
+log "Adapter extras:"
+log "  replenish_add_buff_success: $REP_OK"
+log "  rx0_interrupts: $RX_IRQ0"
 
-if [ "$H_REG_QUEUE" -gt 0 ] 2>/dev/null; then
-    score_pass "Using multi-queue hypercalls (hcall_reg_lan_queue=$H_REG_QUEUE)"
-elif [ "$H_REG_LAN" -gt 0 ] 2>/dev/null; then
-    score_pass "Using LAN register hypercalls (hcall_reg_lan=$H_REG_LAN)"
+if [ "$REP_OK" -gt 0 ] 2>/dev/null; then
+    score_pass "Buffers posted (replenish_add_buff_success=$REP_OK)"
+elif grep -qE '^[[:space:]]*rx0_interrupts:' "$STATS_FINAL"; then
+    score_pass "v6 per-queue extras present (rx0_interrupts=$RX_IRQ0)"
 else
-    score_fail "No hcall_reg_lan_queue / hcall_reg_lan activity in ethtool -S"
+    score_fail "Missing v6 ethtool extras (replenish_add_buff_success / rx0_interrupts)"
 fi
 log ""
 

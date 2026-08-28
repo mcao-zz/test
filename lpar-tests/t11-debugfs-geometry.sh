@@ -38,9 +38,9 @@ for n in $RX_LIST; do
 	got_l=$(current_rx)
 	rows_s=$(count_rx_stat_rows)
 	rows_d=$(count_debugfs_queue_rows "$bp")
-	log "ethtool -l RX=$got_l  rx*_packets rows=$rows_s  debugfs queues=$rows_d"
+	log "ethtool -l RX=$got_l  rx*_interrupts rows=$rows_s  debugfs queues=$rows_d"
 	[[ "$got_l" == "$n" ]] || die "ethtool -l RX=$got_l want $n"
-	[[ "$rows_s" == "$n" ]] || die "rx*_packets rows=$rows_s want $n"
+	[[ "$rows_s" == "$n" ]] || die "rx*_interrupts rows=$rows_s want $n"
 	[[ "$rows_d" == "$n" ]] || die "debugfs buffer_pools queue rows=$rows_d want $n"
 	assert_buffer_pools_up "T11-rx$n"
 	# Optional: pool rows = queues * IBMVETH pools (typically 5) — soft check

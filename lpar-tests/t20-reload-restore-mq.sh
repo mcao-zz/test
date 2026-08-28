@@ -60,9 +60,9 @@ sleep 1
 assert_rx_geometry "$RELOAD_RX"
 
 # Stats reset on rmmod — do NOT compare to pre-reload absolute values.
-# Snap after reload, then force a close/open and expect hcall_reg_lan_queue to grow.
-reg_base=$(stat_val hcall_reg_lan_queue); reg_base=${reg_base:-0}
-log "post-reload baseline hcall_reg_lan_queue=$reg_base — measuring open Δ via ifdown/up"
+# v6 has no hcall_* on ethtool -S; MQ open must post buffers (replenish_ok grows).
+rep_base=$(stat_val replenish_add_buff_success); rep_base=${rep_base:-0}
+log "post-reload baseline replenish_add_buff_success=$rep_base — measuring open Δ via ifdown/up"
 iface_down
 sleep 1
 iface_up
@@ -71,13 +71,12 @@ ethtool_rx "$RELOAD_RX" || true
 sleep 1
 assert_rx_geometry "$RELOAD_RX"
 
-reg_after=$(stat_val hcall_reg_lan_queue); reg_after=${reg_after:-0}
-reg_delta=$((reg_after - reg_base))
-log "hcall_reg_lan_queue after reopen: $reg_base → $reg_after (Δ=$reg_delta)"
-# MQ open should register subordinate queues (RX>1 ⇒ reg_lan_queue moves).
-[[ "$reg_delta" -ge 1 ]] || \
-	die "expected hcall_reg_lan_queue to increase on post-reload MQ open (Δ=$reg_delta)"
-ok "hcall_reg_lan_queue grew on post-reload open (Δ=$reg_delta)"
+rep_after=$(stat_val replenish_add_buff_success); rep_after=${rep_after:-0}
+rep_delta=$((rep_after - rep_base))
+log "replenish_add_buff_success after reopen: $rep_base → $rep_after (Δ=$rep_delta)"
+[[ "$rep_delta" -ge 1 ]] || \
+	die "expected replenish_add_buff_success to increase on post-reload MQ open (Δ=$rep_delta)"
+ok "replenish_add_buff_success grew on post-reload open (Δ=$rep_delta)"
 
 ping_ok
 check_no_lockup

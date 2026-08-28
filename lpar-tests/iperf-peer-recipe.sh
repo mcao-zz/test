@@ -53,7 +53,7 @@ for p in \$(seq $IPERF_PORT_FIRST $IPERF_PORT_LAST); do
   $IPERF3 -c $DUT_IP -t $IPERF_TIME -P $IPERF_PARALLEL -p \$p &
 done
 jobs -l
-# prove: on DUT — watch -n1 'ethtool -S \$IFACE | grep rx0_packets'
+# prove: on DUT — watch -n1 'ethtool -S \$IFACE | grep rx0_interrupts'
 # stop later: pkill iperf3
 EOF
 }

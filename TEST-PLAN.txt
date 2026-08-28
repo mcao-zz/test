@@ -1,10 +1,10 @@
-ibmveth MQ RX v4 — LPAR validation plan
+ibmveth MQ RX v6 — LPAR validation plan
 ========================================
-Series: veth-mq-upstream-netnext-v4-review (15 patches, base 805185b7c7a1)
-Tip (update when tip moves): 7e14b04f6649
+Series: veth-mq-v6-squash (15 patches, base 805185b7c7a1)
+Tip (update when tip moves): 86afcb13035a
 Focus: open order, close under traffic, ethtool -L, poll hangs, SQ regression,
-       plus v4-specific review fixes (IRQ ownership, down-state stash, stats,
-       P14 correlator/shutdown), plus P15 RSS hash (ethtool -x/-X)
+       v6 stats ABI (no hcall_* / rxN_packets on ethtool -S), mq_fallback
+       max_rx cap, P14 correlator/shutdown, P15 RSS hash (ethtool -x/-X)
 
 Repo: git@github.com:mcao-zz/test.git  branch veth-mq-tests
 Lab monoliths: verify-mq-adapter.sh, test-veth-mq.sh, rx_queue_size.sh
@@ -31,9 +31,10 @@ v4 deltas to validate (beyond v3 plan)
   (no allocate until open)
 * IRQ ownership: cleanup leaves queue_irq[0] (= netdev->irq); subordinates
   disposed once (no double-dispose storm / wrong virq reuse)
-* Stats: ethtool -S uses hcall_* names; per-queue rxN_*/txN_* after P10
-  remain readable across ifdown/up, while visible per-queue rows follow the
-  current published queue geometry
+* Stats: ethtool -S adapter extras (replenish_*, rx_invalid_buffer,
+  rx_no_buffer) plus per-queue rxN_interrupts / rxN_polls / rxN_no_buffer_drops
+  (no hcall_*; packets/bytes/drops via netdev_stat_ops / sysfs). Rows follow
+  current published queue geometry; readable across ifdown/up
 * P14: aggressive -L must not hang poll on bad correlator; close completes;
   bad correlator / tailroom faults should degrade into invalid-buffer stats
   and recovery, not crashes
@@ -66,7 +67,7 @@ Quick map: risk → test
 | -L under iperf (P12/P13)                   | T9, T15      |
 | Poll hang / bad correlator (P14)           | T10          |
 | NAPI/close during -L / ifdown              | T11          |
-| Stats / debugfs / hcall_* (P10/P11)        | T12, T16     |
+| Stats / debugfs / scale side effects       | T12, T16     |
 | Stats coherence (ethtool vs ip/proc/sar)   | T22          |
 | Legacy firmware (no MQ bit)                | T13          |
 | Down-state RX stash (P13)                  | T8, T17      |
@@ -83,7 +84,7 @@ Pass criteria (global)
 * ifup always restores ping -I $IFACE within a few seconds
 * dmesg: no Oops/BUG/WARNING/ibmveth_interrupt (Call Trace alone is not enough)
 * After each major test: ping -I $IFACE $PEER OK
-* After each -L: ethtool -l RX, ethtool -S rxN_packets rows, and
+* After each -L: ethtool -l RX, ethtool -S rxN_interrupts rows, and
   /proc/interrupts lines for $IFACE all equal the target count
 * queue0 must remain usable across close/open and resize churn; fail on
   "queue 0 has invalid IRQ (0)" or repeated request_irq reopen failures
@@ -98,7 +99,7 @@ T1 — SQ bring-up / tear-down churn
   ethtool -L $IFACE rx 1
   for i in $(seq 1 50); do ip link set $IFACE down; ip link set $IFACE up; done
   Gates (smoke.sh): ping -I $IFACE (not bare ping — avoids fake PASS via
-  another NIC); debugfs buffer_pools Size kept while down / Active when up;
+  another NIC); debugfs buffer_pools Count kept while down / Active when up;
   RX counters must move after reopen. IBMVETH_KO srcversion must match
   loaded module when set (modprobe often loads a stale .ko).
   Pass: no hang; pools healthy; ping -I + RX Δ OK
@@ -150,21 +151,22 @@ T11 — parallel -L and ifdown/up
   Pass: eventually quiescent; no close deadlock
 
 T12 — stats / debugfs smoke
-  ethtool -S $IFACE | grep -E 'hcall_|rx[0-9]+_packets|tx[0-9]+_packets'
-  Expect v4 names: hcall_reg_lan_queue, hcall_reg_lan, hcall_add_bufs_queue, …
-  After MQ traffic: several rxN_packets increase (not only rx0)
+  ethtool -S $IFACE | grep -E 'replenish_|rx_invalid_buffer|rx[0-9]+_interrupts'
+  Expect v6 names: replenish_add_buff_success, rx_invalid_buffer,
+        rxN_interrupts / rxN_polls / rxN_no_buffer_drops (no hcall_*,
+        no rxN_packets — those are sysfs / ip -s link)
+  After MQ traffic: several rxN_interrupts increase (not only rx0)
   ifdown; ethtool -S still readable; ifup; stats still readable
   Note: visible per-queue rows follow current RX geometry, not historical
         max geometry, but aggregate counters remain meaningful
   find /sys/kernel/debug -name buffer_pools 2>/dev/null | head
   Pass: readable; no oops
 
-T22 — stats coherence (ethtool vs ndo / ip / proc; optional sar)
-  sum(ethtool -S rxN_packets) ≈ ip -s link RX packets ≈ /proc/net/dev
-  sum(txN_packets) ≈ TX when txN rows exist; sum(rxN_invalid_buffers)
-    ≈ rx_invalid_buffer when present
+T22 — stats coherence (sysfs / ip / proc; optional sar)
+  sysfs rx_packets ≈ ip -s link RX packets ≈ /proc/net/dev
+  same for TX; sum(rxN_invalid_buffers) ≈ rx_invalid_buffer when present
   Counters monotonic over STATS_SAMPLE_SECS (default RX_SAMPLE_SECS)
-  UNDER_RX=1: Δ ≥ MIN_RX_DELTA and ethtool Δ ≈ ip Δ; sar -n DEV if installed
+  UNDER_RX=1: Δ ≥ MIN_RX_DELTA and sysfs Δ ≈ ip Δ; sar -n DEV if installed
   Script: lpar-tests/t22-stats-coherence.sh (run-all: quiet + heavy UNDER_RX)
   Pass: within STATS_TOLERANCE / STATS_TOL_PCT; no backwards counters
 
@@ -190,7 +192,7 @@ v4-focused additions
 T14 — Resize geometry triple-check (automated by rx_queue_size.sh)
   After each -L N:
     ethtool -l RX == N
-    count(rxN_packets in -S) == N
+    count(rxN_interrupts in -S) == N
     count(/proc/interrupts matching $IFACE) == N
     sysfs queues/rx-* == N (if present)
     dmesg delta contains "Successfully resized to N RX queues"
@@ -206,15 +208,15 @@ T15 — Resize under multi-flow RX (cover-letter style)
   On DUT: iperf3 -s -p 5201..5216 -D
   On peer: iperf3 -c $DUT_IP -t 300 -P 4 -p 5201..5216 &
   On DUT: sudo PEER=$PEER ./rx_queue_size.sh $IFACE 1
-  Watch: ethtool -S rx*_packets / rx*_interrupts move across queues
+  Watch: ethtool -S rx*_interrupts / rx*_polls move across queues; sysfs rx_packets climbs
   Pass: T14 checks under load; no hang; ping OK after
 
-T16 — hcall counters track resize
+T16 — scale-up/down side effects (v6: no hcall_* on ethtool -S)
   Snapshot ethtool -S before/after scale-up 4→8 and scale-down 8→4
-  Expect: hcall_reg_lan_queue increases on scale-up (≈ +4)
-          hcall_free_lan_queue increases on scale-down
-          hcall_add_bufs_queue increases when replenishing new queues
-  Pass: deltas non-zero in the right direction (absolute values vary)
+  Expect: replenish_add_buff_success increases on scale-up (new queues filled)
+          rx4..rx7_interrupts appear on scale-up and vanish on scale-down
+          geometry / IRQ rows track 4→8→4
+  Pass: replenish Δ > 0; retired per-queue keys gone after shrink
 
 T17 — Down-state stash does not touch live IRQs
   ifup with rx 8; note IRQ lines
@@ -239,11 +241,13 @@ T19 — set_channels TX and RX together
   ethtool -l $IFACE
   ethtool -L $IFACE rx 4 tx 2   # or separate if driver requires
   (ibmveth set_channels handles both; use ethtool -L rx/tx as supported)
+  ethtool -L $IFACE tx $current_tx  # TX-only RMW must not shrink RX
   ethtool -l shows expected rx/tx; ping + short iperf OK
   Verify TX current count matches requested TX, not just RX
   ifdown; ethtool -L rx 8; ifup; ethtool -l RX: 8
   Pass: combined path and down-stash still work; RX stash remains deferred
-        until open; TX geometry is correct after the operation
+        until open; TX geometry is correct after the operation;
+        TX-only -L keeps live RX (v6 max_rx cap, not clamp rx_count)
 
 T20 — Module reload restores MQ
   ethtool -L rx 8; verify MQ
@@ -252,8 +256,8 @@ T20 — Module reload restores MQ
   Bring $IFACE up; ethtool -l RX >= 1; ping OK
   Re-establish MQ geometry explicitly after reload (for example RX=8) and
   verify queue rows / IRQ lines match again
-  Pass: open complete; hcall_reg_lan_queue > 0 if rx>1; no stuck NAPI;
-        MQ geometry can be restored after reload
+  Pass: open complete; replenish_add_buff_success grows on reopen if rx>1;
+        no stuck NAPI; MQ geometry can be restored after reload
 
 T23 — Probe real_num_rx_queues matches default while down (v5 / P10)
   rmmod/modprobe ibmveth; leave $IFACE DOWN
@@ -265,10 +269,10 @@ T23 — Probe real_num_rx_queues matches default while down (v5 / P10)
 
 T21 — RSS hash algorithm (P15)
   Quiet (default):
-    ethtool -x/-X get/set crc32|xor; reject key/indir/toeplitz; ping
+    ethtool -x/-X get/set murmur|additive; reject key/indir/toeplitz; ping
   Under traffic (UNDER_RX=1, also in run-all heavy after inbound gate):
     With lp7 multi-flow RX alive at RX=8:
-      prove MQ spread → switch hfunc (crc32↔xor) → error Δ bounded →
+      prove MQ spread → switch hfunc (murmur↔additive) → error Δ bounded →
       prove MQ spread again → restore → prove again
       Log per-queue Δ before/after (PHYP owns indir — pattern change is
       soft evidence of hasher effect, not a hard remapping assert)
@@ -294,7 +298,7 @@ Suggested order
 What test-veth-mq.sh already covers
 ----------------------------------
 Smoke subset of T3/T7/T9/T20-ish (scale, under-load ping, single queue,
-module reload, hcall_reg_lan_queue). It does NOT replace T10/T11 long
+module reload, replenish extras). It does NOT replace T10/T11 long
 stress, T8/T17 stash checks, T15 multi-iperf RX distribution, or T21
 RSS hfunc get/set.
 
@@ -322,7 +326,7 @@ Auto harness (preferred for new tests):
   lpar-tests/t8-down-stash.sh    — T8 P13 stash
   lpar-tests/t17-down-no-live-irqs.sh — T17 no live IRQs while down
   lpar-tests/t14-rx-cycle.sh     — T14 wraps ../rx_queue_size.sh
-  lpar-tests/t16-hcall-deltas.sh — T16 hcall_* counters
+  lpar-tests/t16-hcall-deltas.sh — T16 scale-up replenish / geometry side effects
   lpar-tests/t19-set-channels.sh — D13/T19 set_channels (+ TX_SET)
   lpar-tests/t20-reload-restore-mq.sh — T20 module reload restores MQ
   lpar-tests/t23-probe-real-rx.sh — T23 probe Current RX == default while down

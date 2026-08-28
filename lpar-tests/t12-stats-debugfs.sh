@@ -1,5 +1,5 @@
 #!/bin/bash
-# D11 / T12 — debugfs buffer_pools + v4 ethtool -S name smoke
+# D11 / T12 — debugfs buffer_pools + v6 ethtool -S name smoke
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=env.sh
@@ -11,26 +11,34 @@ iface_up
 
 log "=== D11/T12 stats + debugfs on $IFACE ==="
 
-# v4 ethtool names must exist
-for s in hcall_reg_lan hcall_reg_lan_queue hcall_add_bufs_queue \
-	hcall_free_lan_queue replenish_add_buff_success rx_invalid_buffer; do
+# v6 ethtool -S: adapter keys + per-queue extras. packets/bytes/drops are
+# netdev_stat_ops (sysfs / ip -s link), not -S. hcall_* were dropped.
+for s in replenish_add_buff_success replenish_add_buff_failure \
+	rx_invalid_buffer rx_no_buffer tx_send_failed; do
 	v=$(stat_val "$s")
 	[[ -n "$v" ]] || die "missing ethtool -S counter: $s"
 	log "  $s=$v"
 done
-ok "v4 hcall_*/core counters present"
+ok "v6 adapter counters present"
+
+if ethtool -S "$IFACE" 2>/dev/null | grep -qE '^[[:space:]]*hcall_'; then
+	warn "ethtool -S still has hcall_* keys (v6 dropped them — wrong .ko?)"
+fi
 
 n=$(current_rx)
 rows=$(count_rx_stat_rows)
-[[ "$rows" == "$n" ]] || die "rx*_packets rows=$rows want $n"
-ok "per-queue rx*_packets rows=$rows"
+[[ "$rows" == "$n" ]] || die "rx*_interrupts rows=$rows want $n"
+ok "per-queue rx*_interrupts rows=$rows"
+[[ -n "$(stat_val rx0_interrupts)" ]] || die "missing rx0_interrupts"
+[[ -n "$(stat_val rx0_polls)" ]] || die "missing rx0_polls"
+[[ -n "$(stat_val rx0_no_buffer_drops)" ]] || die "missing rx0_no_buffer_drops"
 
 # debugfs buffer_pools — must exist and look live while UP
 bp=$(iface_buffer_pools) || die "missing debugfs buffer_pools (IFACE=$IFACE)"
 ok "buffer_pools at $bp"
 head -20 "$bp" | tee "$LOGDIR/buffer_pools.txt" >/dev/null
 assert_buffer_pools_up "T12"
-# Soft format check
+grep -qiE 'Count' "$bp" || log "WARN: buffer_pools header missing Count (v6 name)"
 grep -qiE 'queue|pool|buff' "$bp" || log "WARN: unexpected buffer_pools format"
 
 # historical pool0 sysfs still there (under netdev)

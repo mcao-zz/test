@@ -164,15 +164,21 @@ ping_ok() {
 	ok "ping -I $IFACE $PEER"
 }
 
-# Sum of per-queue + legacy rx packets (works SQ and MQ).
+# ndo_get_stats64 via sysfs. v6 does not export rxN_packets on ethtool -S
+# (packets/bytes/drops live in netdev_stat_ops; no widely shipped CLI).
+link_stat() {
+	local field=$1
+	local v
+	v=$(cat "/sys/class/net/${IFACE}/statistics/${field}" 2>/dev/null || true)
+	echo "${v:-0}"
+}
+
 sum_rx_packets() {
-	local s
-	s=$(ethtool -S "$IFACE" 2>/dev/null | awk '
-		$1 ~ /^rx[0-9]*_packets:$/ { t += $2 }
-		$1 == "rx_packets:" { t += $2 }
-		END { print t+0 }
-	')
-	echo "${s:-0}"
+	link_stat rx_packets
+}
+
+sum_tx_packets() {
+	link_stat tx_packets
 }
 
 # After ifdown/up: ping on IFACE must work AND RX counters must move.
@@ -225,15 +231,17 @@ max_rx() {
 	echo "$m"
 }
 
+# Live RX/TX geometry on ethtool -S. v6 dropped rxN_packets / txN_packets
+# (and hcall_*); one interrupts / send_failures key remains per live queue.
 count_rx_stat_rows() {
 	local n
-	n=$(ethtool -S "$IFACE" 2>/dev/null | grep -cE '^[[:space:]]*rx[0-9]+_packets:') || true
+	n=$(ethtool -S "$IFACE" 2>/dev/null | grep -cE '^[[:space:]]*rx[0-9]+_interrupts:') || true
 	echo "${n:-0}"
 }
 
 count_tx_stat_rows() {
 	local n
-	n=$(ethtool -S "$IFACE" 2>/dev/null | grep -cE '^[[:space:]]*tx[0-9]+_packets:') || true
+	n=$(ethtool -S "$IFACE" 2>/dev/null | grep -cE '^[[:space:]]*tx[0-9]+_send_failures:') || true
 	echo "${n:-0}"
 }
 
@@ -334,12 +342,12 @@ assert_rx_geometry() {
 	stats=$(count_rx_stat_rows)
 	irqs=$(count_iface_irqs)
 	[[ "$got" == "$n" ]] || die "ethtool -l RX=$got want $n"
-	[[ "$stats" == "$n" ]] || die "ethtool -S rx*_packets rows=$stats want $n"
+	[[ "$stats" == "$n" ]] || die "ethtool -S rx*_interrupts rows=$stats want $n"
 	[[ "$irqs" == "$n" ]] || die "/proc/interrupts $IFACE lines=$irqs want $n"
 	ok "geometry RX=$n (ethtool -l / -S / irqs)"
 }
 
-# Assert ethtool -l TX matches N; optionally tx*_packets row count if present.
+# Assert ethtool -l TX matches N; optionally tx*_send_failures row count.
 assert_tx_geometry() {
 	local n=$1
 	local got rows
@@ -348,10 +356,10 @@ assert_tx_geometry() {
 	[[ "$got" == "$n" ]] || die "ethtool -l TX=$got want $n"
 	rows=$(count_tx_stat_rows)
 	if [[ "${rows:-0}" -gt 0 ]]; then
-		[[ "$rows" == "$n" ]] || die "ethtool -S tx*_packets rows=$rows want $n"
+		[[ "$rows" == "$n" ]] || die "ethtool -S tx*_send_failures rows=$rows want $n"
 		ok "geometry TX=$n (ethtool -l / -S)"
 	else
-		ok "geometry TX=$n (ethtool -l; no tx*_packets rows)"
+		ok "geometry TX=$n (ethtool -l; no tx*_send_failures rows)"
 	fi
 }
 
@@ -425,7 +433,7 @@ count_debugfs_queue_rows() {
 	' "$f"
 }
 
-# When UP: live pools must have Size>0 and Active=1; at least one Active pool.
+# When UP: live pools must have Count>0 and Active=1; at least one Active pool.
 # Catches free_buffer_pool() clearing size/active (ifdown/up RX death).
 assert_buffer_pools_up() {
 	local label=${1:-up}
@@ -434,14 +442,14 @@ assert_buffer_pools_up() {
 	if grep -q '^# down:' "$bp" 2>/dev/null; then
 		die "$label: buffer_pools still shows # down: (iface not opened?)"
 	fi
-	# Cols: Queue Pool Size BuffSize Active Available
+	# Cols: Queue Pool Count BuffSize Active Available  ($3 is buffer count)
 	bad=$(awk '
 		/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+/ {
 			size = $3 + 0; active = $5 + 0
 			if (active == 1 && size == 0) bad++
 			if (active == 1) live++
-			# Classic regression: pools 0/1/4 cleared to Size=0 Active=0
-			# while inactive 2/3 keep Size=256. Flag Size=0 on small/jumbo
+			# Classic regression: pools 0/1/4 cleared to Count=0 Active=0
+			# while inactive 2/3 keep Count=256. Flag Count=0 on small/jumbo
 			# buff sizes that should stay configured.
 			bs = $4 + 0
 			if (size == 0 && (bs == 512 || bs == 2048 || bs == 65536))
@@ -462,7 +470,7 @@ assert_buffer_pools_up() {
 	ok "$label: buffer_pools live (Active=1 rows=$active_n) at $bp"
 }
 
-# When DOWN: Size must remain (probe/sysfs geometry); Active/Available show 0.
+# When DOWN: Count must remain (probe/sysfs geometry); Active/Available show 0.
 assert_buffer_pools_down() {
 	local label=${1:-down}
 	local bp bad
@@ -691,8 +699,7 @@ _HEALTH_ALERT_MSGS=()
 _HEALTH_ERR_INV=
 _HEALTH_ERR_NOBUF=
 _HEALTH_ERR_REP=
-_HEALTH_HCALL_REG=
-_HEALTH_HCALL_FREE=
+_HEALTH_REP_OK=
 
 _health_note_alert() {
 	_HEALTH_ALERTS=$((_HEALTH_ALERTS + 1))
@@ -741,8 +748,7 @@ _health_snap_adapter_stats() {
 	_HEALTH_ERR_INV=$(stat_val rx_invalid_buffer); _HEALTH_ERR_INV=${_HEALTH_ERR_INV:-0}
 	_HEALTH_ERR_NOBUF=$(stat_val rx_no_buffer); _HEALTH_ERR_NOBUF=${_HEALTH_ERR_NOBUF:-0}
 	_HEALTH_ERR_REP=$(stat_val replenish_add_buff_failure); _HEALTH_ERR_REP=${_HEALTH_ERR_REP:-0}
-	_HEALTH_HCALL_REG=$(stat_val hcall_reg_lan_queue); _HEALTH_HCALL_REG=${_HEALTH_HCALL_REG:-0}
-	_HEALTH_HCALL_FREE=$(stat_val hcall_free_lan_queue); _HEALTH_HCALL_FREE=${_HEALTH_HCALL_FREE:-0}
+	_HEALTH_REP_OK=$(stat_val replenish_add_buff_success); _HEALTH_REP_OK=${_HEALTH_REP_OK:-0}
 }
 
 _health_enabled() {
@@ -890,38 +896,35 @@ health_check_after() {
 		fi
 	fi
 
-	# --- adapter error stats + hcall counters (healthiness) ---
+	# --- adapter error stats (healthiness) ---
 	if ip link show "$IFACE" &>/dev/null; then
-		local inv nobuf rep reg free
-		local d_inv d_nobuf d_rep d_reg d_free
+		local inv nobuf rep repok
+		local d_inv d_nobuf d_rep d_repok
 		local load n load_lim
 
 		inv=$(stat_val rx_invalid_buffer); inv=${inv:-0}
 		nobuf=$(stat_val rx_no_buffer); nobuf=${nobuf:-0}
 		rep=$(stat_val replenish_add_buff_failure); rep=${rep:-0}
-		reg=$(stat_val hcall_reg_lan_queue); reg=${reg:-0}
-		free=$(stat_val hcall_free_lan_queue); free=${free:-0}
+		repok=$(stat_val replenish_add_buff_success); repok=${repok:-0}
 		d_inv=$((inv - ${_HEALTH_ERR_INV:-0}))
 		d_nobuf=$((nobuf - ${_HEALTH_ERR_NOBUF:-0}))
 		d_rep=$((rep - ${_HEALTH_ERR_REP:-0}))
-		d_reg=$((reg - ${_HEALTH_HCALL_REG:-0}))
-		d_free=$((free - ${_HEALTH_HCALL_FREE:-0}))
-		log "health[$label]: stats Δ invalid=$d_inv no_buffer=$d_nobuf replenish_fail=$d_rep  hcall_reg_q Δ=$d_reg free_q Δ=$d_free"
+		d_repok=$((repok - ${_HEALTH_REP_OK:-0}))
+		log "health[$label]: stats Δ invalid=$d_inv no_buffer=$d_nobuf replenish_fail=$d_rep replenish_ok Δ=$d_repok"
 		{
-			echo "adapter_stats_after_$label inv=$inv nobuf=$nobuf rep=$rep reg=$reg free=$free"
-			echo "adapter_delta_after_$label d_inv=$d_inv d_nobuf=$d_nobuf d_rep=$d_rep d_reg=$d_reg d_free=$d_free"
+			echo "adapter_stats_after_$label inv=$inv nobuf=$nobuf rep=$rep repok=$repok"
+			echo "adapter_delta_after_$label d_inv=$d_inv d_nobuf=$d_nobuf d_rep=$d_rep d_repok=$d_repok"
 		} >>"$HEALTH_LOG"
 		if [[ "$d_inv" -gt "$HEALTH_ERR_DELTA" || "$d_nobuf" -gt "$HEALTH_ERR_DELTA" || \
 		      "$d_rep" -gt "$HEALTH_ERR_DELTA" ]]; then
 			_health_note_alert "adapter error stats after $label: invalidΔ=$d_inv no_bufferΔ=$d_nobuf replenishΔ=$d_rep (lim $HEALTH_ERR_DELTA)"
 			_health_fail_mode && fail=1
 		fi
-		# hcall_* growth is expected on resize/open — log only; T16 asserts directionality.
+		# replenish_ok growth is expected on resize/open — log only; T16 asserts directionality.
 		_HEALTH_ERR_INV=$inv
 		_HEALTH_ERR_NOBUF=$nobuf
 		_HEALTH_ERR_REP=$rep
-		_HEALTH_HCALL_REG=$reg
-		_HEALTH_HCALL_FREE=$free
+		_HEALTH_REP_OK=$repok
 
 		# --- load / optional CPU ---
 		load=$(_loadavg1)
@@ -1006,7 +1009,7 @@ health_summary() {
 	log "  irqs now:     $irqs  (baseline $_HEALTH_IRQ_BASE)  rx=$(current_rx 2>/dev/null || echo ?)"
 	log "  loadavg1:     $load  (nproc=$n)"
 	log "  adapter err:  invalid=$inv no_buffer=$nobuf replenish_fail=$rep"
-	log "  hcall:        reg_lan_queue=${_HEALTH_HCALL_REG:-?} free_lan_queue=${_HEALTH_HCALL_FREE:-?}"
+	log "  replenish_ok: ${_HEALTH_REP_OK:-?}"
 	log "  detail log:   $HEALTH_LOG"
 
 	# End-of-suite 1s CPU sample (cheap once).
@@ -1081,32 +1084,44 @@ health_unload_probe() {
 # Proof thresholds for real bulk inbound (not ping/ARP noise).
 # Override: MIN_RX_DELTA=5000 RX_SAMPLE_SECS=5 MIN_ACTIVE_RX_QUEUES=2
 : "${RX_SAMPLE_SECS:=5}"
-: "${MIN_RX_DELTA:=10000}"          # total rx*_packets increase over sample
-: "${MIN_ACTIVE_RX_QUEUES:=2}"      # distinct queues that must see Δ>0 when MQ
+: "${MIN_RX_DELTA:=10000}"          # sysfs rx_packets increase over sample
+: "${MIN_ACTIVE_RX_QUEUES:=2}"      # distinct queues with interrupt/poll Δ>0
 : "${MQ_PROOF_RX:=8}"               # RX queue count used for MQ spread proof
 
-sum_rx_packets() {
-	ethtool -S "$IFACE" 2>/dev/null | awk '
-		/^[[:space:]]*rx[0-9]+_packets:/ { s += $2 }
-		END { print s+0 }
-	'
-}
-
 count_rx_queue_rows() {
-	ethtool -S "$IFACE" 2>/dev/null | awk '
-		/^[[:space:]]*rx[0-9]+_packets:/ { n++ }
-		END { print n+0 }
-	'
+	count_rx_stat_rows
 }
 
-# Print "qid count" lines for each rxN_packets counter.
-snapshot_rx_queue_packets() {
+# Print "qid interrupts polls" for each live RX queue (v6 ethtool -S).
+snapshot_rx_queue_activity() {
 	ethtool -S "$IFACE" 2>/dev/null | awk '
-		/^[[:space:]]*rx([0-9]+)_packets:/ {
-			if (match($1, /[0-9]+/))
-				print substr($1, RSTART, RLENGTH), $2 + 0
+		/^[[:space:]]*rx([0-9]+)_interrupts:/ {
+			if (match($1, /[0-9]+/)) {
+				q = substr($1, RSTART, RLENGTH) + 0
+				irq[q] = $2 + 0
+				if (q > maxq) maxq = q
+				seen[q] = 1
+			}
+		}
+		/^[[:space:]]*rx([0-9]+)_polls:/ {
+			if (match($1, /[0-9]+/)) {
+				q = substr($1, RSTART, RLENGTH) + 0
+				pol[q] = $2 + 0
+				if (q > maxq) maxq = q
+				seen[q] = 1
+			}
+		}
+		END {
+			for (i = 0; i <= maxq; i++)
+				if (i in seen)
+					print i, irq[i]+0, pol[i]+0
 		}
 	'
+}
+
+# Compat name: older scripts asked for rxN_packets; v6 has no such keys.
+snapshot_rx_queue_packets() {
+	snapshot_rx_queue_activity
 }
 
 # Read a line from the controlling terminal (works under sudo).
@@ -1226,11 +1241,11 @@ diagnose_inbound_fail() {
 	a=$(sum_rx_packets)
 	sleep 2
 	b=$(sum_rx_packets)
-	log "rx*_packets sum: $a → $b (Δ=$((b - a)) over 2s)"
-	link_rx=$(ip -s link show "$IFACE" 2>/dev/null | awk '/RX:/{getline; print $1; exit}')
+	log "sysfs rx_packets: $a → $b (Δ=$((b - a)) over 2s)"
+	link_rx=$(ip -s link show "$IFACE" 2>/dev/null | awk '/RX:/{getline; print $2; exit}')
 	log "ip -s link $IFACE RX packets field≈${link_rx:-?}"
 	log "iperf3 listeners: $(ss -ltnp 2>/dev/null | grep -c iperf3 || echo 0)"
-	ethtool -S "$IFACE" 2>/dev/null | grep -E '^[[:space:]]*rx([0-9]+_)?packets:' | head -12 | \
+	ethtool -S "$IFACE" 2>/dev/null | grep -E '^[[:space:]]*rx[0-9]+_(interrupts|polls):' | head -16 | \
 		while read -r line; do log "  $line"; done
 
 	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
@@ -1258,7 +1273,7 @@ Low/zero RX Δ on $IFACE. Do this on peer BEFORE typing R:
   # then full:
   for p in $IPERF_PORTS; do iperf3 -c \$DUT_IP -t 3600 -P 4 -p \$p & done
 
-On DUT, watch:  watch -n1 "ethtool -S $IFACE | grep rx0_packets"
+On DUT, watch:  watch -n1 "ethtool -S $IFACE | grep rx0_interrupts"
 Only type R when that counter is climbing.
 ----------------------------------------------------------------------
 EOF
@@ -1276,47 +1291,54 @@ inbound_rx_flowing() {
 }
 
 # Hard proof: bulk inbound RX (rejects ping/ARP-sized Δ).
-# Returns 0 on success. Logs per-queue Δ. Does not require MQ spread.
+# Returns 0 on success. Packet total is ndo_get_stats64 (sysfs); per-queue
+# activity is rxN_interrupts / rxN_polls (v6 has no ethtool rxN_packets).
 prove_bulk_inbound_rx() {
 	local label=${1:-bulk-rx}
 	local wait=${2:-$RX_SAMPLE_SECS}
 	local min_delta=${3:-$MIN_RX_DELTA}
-	local q c before_file after_file total=0 active=0 d nq b
+	local q irq pol before_file after_file total=0 active=0 nq
+	local b_irq b_pol d_irq d_pol a_pkts b_pkts
 
 	before_file=$(mktemp)
 	after_file=$(mktemp)
-	snapshot_rx_queue_packets >"$before_file"
+	snapshot_rx_queue_activity >"$before_file"
 	nq=$(wc -l <"$before_file" | tr -d ' ')
+	a_pkts=$(sum_rx_packets)
 	sleep "$wait"
-	snapshot_rx_queue_packets >"$after_file"
+	snapshot_rx_queue_activity >"$after_file"
+	b_pkts=$(sum_rx_packets)
+	total=$((b_pkts - a_pkts))
 
 	log "=== $label: ${wait}s sample on $IFACE (need total Δ>=$min_delta; queues=$nq) ==="
-	while read -r q c; do
-		b=$(awk -v q="$q" '$1 == q { print $2; exit }' "$before_file")
-		b=${b:-0}
-		d=$((c - b))
-		total=$((total + d))
-		if [[ "$d" -gt 0 ]]; then
+	while read -r q irq pol; do
+		b_irq=$(awk -v q="$q" '$1 == q { print $2; exit }' "$before_file")
+		b_pol=$(awk -v q="$q" '$1 == q { print $3; exit }' "$before_file")
+		b_irq=${b_irq:-0}; b_pol=${b_pol:-0}
+		d_irq=$((irq - b_irq))
+		d_pol=$((pol - b_pol))
+		if [[ "$d_irq" -gt 0 || "$d_pol" -gt 0 ]]; then
 			active=$((active + 1))
-			log "  rx${q}_packets Δ=$d"
+			log "  rx${q} interrupts Δ=$d_irq polls Δ=$d_pol"
 		fi
 	done <"$after_file"
 	rm -f "$before_file" "$after_file"
 
-	log "$label: total Δ=$total over ${wait}s across $active queue(s)"
+	log "$label: sysfs rx_packets Δ=$total over ${wait}s across $active queue(s)"
 	[[ "$total" -ge "$min_delta" ]] || return 1
 	ok "$label: bulk inbound proven (Δ=$total >= $min_delta)"
 	return 0
 }
 
-# Hard proof: MQ RX under load — bulk + packets on multiple queues.
+# Hard proof: MQ RX under load — bulk + activity on multiple queues.
 # Sets RX to MQ_PROOF_RX first (unless SKIP_SET_RX=1).
 prove_mq_rx_under_load() {
 	local label=${1:-mq-rx-under-load}
 	local wait=${RX_SAMPLE_SECS}
 	local min_delta=${MIN_RX_DELTA}
 	local min_q=${MIN_ACTIVE_RX_QUEUES}
-	local q c before_file after_file total=0 active=0 d nq want_rx b
+	local q irq pol before_file after_file total=0 active=0 nq want_rx
+	local b_irq b_pol d_irq d_pol a_pkts b_pkts
 
 	want_rx=${MQ_PROOF_RX}
 	if [[ "${SKIP_SET_RX:-0}" != 1 ]]; then
@@ -1324,35 +1346,39 @@ prove_mq_rx_under_load() {
 		ethtool_rx "$want_rx" || die "$label: ethtool -L rx $want_rx failed"
 		sleep 1
 		nq=$(count_rx_queue_rows)
-		[[ "$nq" -eq "$want_rx" ]] || die "$label: expected $want_rx rx*_packets rows, got $nq"
+		[[ "$nq" -eq "$want_rx" ]] || die "$label: expected $want_rx rx*_interrupts rows, got $nq"
 	fi
 
 	before_file=$(mktemp)
 	after_file=$(mktemp)
-	snapshot_rx_queue_packets >"$before_file"
+	snapshot_rx_queue_activity >"$before_file"
 	nq=$(wc -l <"$before_file" | tr -d ' ')
+	a_pkts=$(sum_rx_packets)
 	sleep "$wait"
-	snapshot_rx_queue_packets >"$after_file"
+	snapshot_rx_queue_activity >"$after_file"
+	b_pkts=$(sum_rx_packets)
+	total=$((b_pkts - a_pkts))
 
 	log "=== $label: ${wait}s MQ sample (need Δ>=$min_delta AND >=$min_q active queues; nq=$nq) ==="
-	while read -r q c; do
-		b=$(awk -v q="$q" '$1 == q { print $2; exit }' "$before_file")
-		b=${b:-0}
-		d=$((c - b))
-		total=$((total + d))
-		if [[ "$d" -gt 0 ]]; then
+	while read -r q irq pol; do
+		b_irq=$(awk -v q="$q" '$1 == q { print $2; exit }' "$before_file")
+		b_pol=$(awk -v q="$q" '$1 == q { print $3; exit }' "$before_file")
+		b_irq=${b_irq:-0}; b_pol=${b_pol:-0}
+		d_irq=$((irq - b_irq))
+		d_pol=$((pol - b_pol))
+		if [[ "$d_irq" -gt 0 || "$d_pol" -gt 0 ]]; then
 			active=$((active + 1))
-			log "  rx${q}_packets Δ=$d"
+			log "  rx${q} interrupts Δ=$d_irq polls Δ=$d_pol"
 		fi
 	done <"$after_file"
 	rm -f "$before_file" "$after_file"
 
-	log "$label: total Δ=$total active_queues=$active/$nq"
+	log "$label: sysfs rx_packets Δ=$total active_queues=$active/$nq"
 	[[ "$total" -ge "$min_delta" ]] || \
 		die "$label FAIL: bulk RX not proven (Δ=$total < $min_delta) — keep lp7 iperf running"
 	if [[ "$nq" -ge 4 ]]; then
 		[[ "$active" -ge "$min_q" ]] || \
-			die "$label FAIL: MQ spread not proven (only $active queue(s) got packets, need >=$min_q). Check lp7 multi-port/multi-P clients."
+			die "$label FAIL: MQ spread not proven (only $active queue(s) got interrupts/polls, need >=$min_q). Check lp7 multi-port/multi-P clients."
 	fi
 	ok "$label: MQ RX under load proven (Δ=$total, $active/$nq queues)"
 }

@@ -94,6 +94,7 @@ Knobs (sudo KEY=val ./run_….sh  or  ./run_….sh KEY=val)
     SKIP_T22 SKIP_T10 SKIP_T11 SKIP_STASH SKIP_T17 SKIP_CHANNELS
     SKIP_HCALL SKIP_T23 SKIP_T20 SKIP_CLOSE_SQ SKIP_L_CYCLE
     SKIP_CLOSE_MQ SKIP_L_IPERF
+    (SKIP_HCALL skips T16: v6 scale-up replenish/geometry — no hcall_* on -S)
 
   run_rx_1_all only:
     ROUNDS / BOUNCE_ROUNDS / SOAK_SECS / T1_ROUNDS / MID_RX

@@ -9,7 +9,7 @@
 #
 # After each successful -L, validates:
 #   - ethtool -l RX count
-#   - ethtool -S rxN_packets rows
+#   - ethtool -S rxN_interrupts rows (v6: no rxN_packets on -S)
 #   - /proc/interrupts lines for this iface
 #   - sysfs queues/rx-* count (if present)
 #   - iface still UP / LOWER_UP
@@ -21,9 +21,9 @@
 #     expected; bulk RX Δ is the hard connectivity gate.
 #
 # Under load (UNDER_RX=1 — keep lp7→DUT iperf running):
-#   - bulk rx*_packets Δ >= MIN_RX_DELTA over RX_SAMPLE_SECS
+#   - bulk sysfs rx_packets Δ >= MIN_RX_DELTA over RX_SAMPLE_SECS
 #   - scale-down: surviving queues still receive; no error Δ spike
-#   - scale-up: at least one *new* queue (qid >= previous RX) sees packets
+#   - scale-up: at least one *new* queue (qid >= previous RX) sees interrupts/polls
 #
 # Usage:
 #   sudo ./rx_queue_size.sh [iface] [delay_seconds]
@@ -115,7 +115,11 @@ get_rx_max() {
 }
 
 count_rx_stat_queues() {
-	ethtool -S "$IFACE" 2>/dev/null | grep -cE '^[[:space:]]*rx[0-9]+_packets:' || echo 0
+	ethtool -S "$IFACE" 2>/dev/null | grep -cE '^[[:space:]]*rx[0-9]+_interrupts:' || echo 0
+}
+
+link_rx_packets() {
+	cat "/sys/class/net/${IFACE}/statistics/rx_packets" 2>/dev/null || echo 0
 }
 
 count_iface_irqs() {
@@ -139,12 +143,29 @@ stat_val() {
 	'
 }
 
-# Print "qid count" lines
-snapshot_rx_packets() {
+# Print "qid interrupts polls" (v6 ethtool -S; no rxN_packets)
+snapshot_rx_activity() {
 	ethtool -S "$IFACE" 2>/dev/null | awk '
-		/^[[:space:]]*rx([0-9]+)_packets:/ {
-			if (match($1, /[0-9]+/))
-				print substr($1, RSTART, RLENGTH), $2 + 0
+		/^[[:space:]]*rx([0-9]+)_interrupts:/ {
+			if (match($1, /[0-9]+/)) {
+				q = substr($1, RSTART, RLENGTH) + 0
+				irq[q] = $2 + 0
+				if (q > maxq) maxq = q
+				seen[q] = 1
+			}
+		}
+		/^[[:space:]]*rx([0-9]+)_polls:/ {
+			if (match($1, /[0-9]+/)) {
+				q = substr($1, RSTART, RLENGTH) + 0
+				pol[q] = $2 + 0
+				if (q > maxq) maxq = q
+				seen[q] = 1
+			}
+		}
+		END {
+			for (i = 0; i <= maxq; i++)
+				if (i in seen)
+					print i, irq[i]+0, pol[i]+0
 		}
 	'
 }
@@ -206,7 +227,8 @@ check_rx_under_load() {
 	local prev=$2
 	local stepdir=$3
 	local before_f after_f wait=$RX_SAMPLE_SECS
-	local q c b d total=0 active=0 new_hit=0 need_active
+	local q irq pol b_irq b_pol d_irq d_pol total=0 active=0 new_hit=0 need_active
+	local a_pkts b_pkts
 	local min_q=$MIN_ACTIVE_RX_QUEUES
 	local tries=${UNDER_RX_RETRIES:-3}
 	local attempt=1
@@ -226,26 +248,32 @@ check_rx_under_load() {
 		total=0
 		active=0
 		new_hit=0
-		snapshot_rx_packets >"$before_f"
+		snapshot_rx_activity >"$before_f"
+		a_pkts=$(link_rx_packets)
 		sleep "$wait"
-		snapshot_rx_packets >"$after_f"
+		snapshot_rx_activity >"$after_f"
+		b_pkts=$(link_rx_packets)
+		total=$((b_pkts - a_pkts))
 
 		echo "  RX sample ${wait}s attempt $attempt/$tries (UNDER_RX=1, need bulk Δ>=$MIN_RX_DELTA):"
-		while read -r q c; do
-			b=$(awk -v q="$q" '$1 == q { print $2; exit }' "$before_f")
-			b=${b:-0}
-			d=$((c - b))
-			total=$((total + d))
-			if [ "$d" -gt 0 ]; then
+		while read -r q irq pol; do
+			b_irq=$(awk -v q="$q" '$1 == q { print $2; exit }' "$before_f")
+			b_pol=$(awk -v q="$q" '$1 == q { print $3; exit }' "$before_f")
+			b_irq=${b_irq:-0}; b_pol=${b_pol:-0}
+			d_irq=$((irq - b_irq))
+			d_pol=$((pol - b_pol))
+			if [ "$d_irq" -gt 0 ] || [ "$d_pol" -gt 0 ]; then
 				active=$((active + 1))
-				echo "    rx${q}_packets Δ=$d"
+				echo "    rx${q} interrupts Δ=$d_irq polls Δ=$d_pol"
 			fi
-			if [ "$expect" -gt "$prev" ] && [ "$q" -ge "$prev" ] && [ "$d" -ge "$MIN_NEW_QUEUE_DELTA" ]; then
-				new_hit=$((new_hit + 1))
+			if [ "$expect" -gt "$prev" ] && [ "$q" -ge "$prev" ]; then
+				if [ "$d_irq" -ge "$MIN_NEW_QUEUE_DELTA" ] || [ "$d_pol" -ge "$MIN_NEW_QUEUE_DELTA" ]; then
+					new_hit=$((new_hit + 1))
+				fi
 			fi
 		done <"$after_f"
 
-		echo "    total Δ=$total active_queues=$active new_queue_hits=$new_hit (prev_rx=$prev → $expect)"
+		echo "    sysfs rx_packets Δ=$total active_queues=$active new_queue_hits=$new_hit (prev_rx=$prev → $expect)"
 
 		if [ "$total" -ge "$MIN_RX_DELTA" ]; then
 			bulk_ok=1
@@ -293,7 +321,7 @@ check_rx_under_load() {
 		elif [ "$bulk_ok" != 1 ]; then
 			warn "scale-up new-queue check skipped (no bulk traffic)"
 		else
-			bad "scale-up: no new queue (qid>=$prev) got packets — multi-flow iperf required"
+			bad "scale-up: no new queue (qid>=$prev) got interrupts/polls — multi-flow iperf required"
 		fi
 	fi
 }
@@ -325,9 +353,9 @@ validate_after_resize() {
 
 	stats_n=$(count_rx_stat_queues)
 	if [ "$stats_n" = "$expect" ]; then
-		ok "ethtool -S rx*_packets rows=$stats_n"
+		ok "ethtool -S rx*_interrupts rows=$stats_n"
 	else
-		bad "ethtool -S rx*_packets rows=$stats_n (want $expect)"
+		bad "ethtool -S rx*_interrupts rows=$stats_n (want $expect)"
 	fi
 
 	irq_n=$(count_iface_irqs)
@@ -360,8 +388,8 @@ validate_after_resize() {
 	ethtool -S "$IFACE" > "$stats_f" 2>/dev/null || true
 	check_error_deltas
 
-	echo -n "  rx*_packets (abs): "
-	awk '/^[[:space:]]*rx[0-9]+_packets:/ { printf "%s=%s ", $1, $2 }' "$stats_f"
+	echo -n "  rx*_interrupts (abs): "
+	awk '/^[[:space:]]*rx[0-9]+_interrupts:/ { printf "%s=%s ", $1, $2 }' "$stats_f"
 	echo ""
 
 	# --- under-load packet proof ---
@@ -401,7 +429,7 @@ validate_after_resize() {
 
 	# --- optional peer ping (always -I IFACE; bare ping fakes PASS) ---
 	# Under UNDER_RX=1, ICMP competes with the iperf flood: a single lost
-	# echo is common while bulk rx*_packets Δ already proved the path
+	# echo is common while bulk sysfs rx_packets Δ already proved the path
 	# (lab: 8→16 Δ~347k but ping -c 1 failed / 66% loss). Soft-warn only.
 	if [ -n "$PEER" ]; then
 		local ping_n=5

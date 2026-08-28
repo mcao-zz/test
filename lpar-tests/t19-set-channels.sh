@@ -24,6 +24,18 @@ log "up: ethtool -L rx $RX_UP"
 ethtool_rx "$RX_UP" || die "ethtool -L rx $RX_UP failed"
 assert_rx_geometry "$RX_UP"
 
+# v6 get_channels: TX-only ethtool -L is read-modify-write of rx_count.
+# Capping max_rx (not clamping rx_count) must not shrink live RX.
+saved_rx=$(current_rx)
+saved_tx=$(current_tx)
+[[ -n "$saved_tx" ]] || die "ethtool -l TX not parseable"
+log "TX-only -L tx $saved_tx (must keep RX=$saved_rx)"
+ethtool -L "$IFACE" tx "$saved_tx" || die "TX-only ethtool -L tx $saved_tx failed"
+got_rx=$(current_rx)
+[[ "$got_rx" == "$saved_rx" ]] || \
+	die "TX-only -L silently shrank RX ($saved_rx → $got_rx)"
+ok "TX-only -L kept RX=$got_rx"
+
 if [[ -n "$TX_SET" ]]; then
 	log "up: ethtool -L tx $TX_SET"
 	ethtool -L "$IFACE" tx "$TX_SET" || die "ethtool -L tx $TX_SET failed"
