@@ -47,8 +47,19 @@ Receiver R (another host on the same VLAN):
   nc -u -l 6666 | tee netcons.log         # or: socat -u UDP-RECV:6666 -
 
 On the LPAR:
-  modprobe netconsole netconsole=6665@<LPAR_IP>/ETH,6666@<R_IP>/<R_MAC>
-  dmesg | tail -3                          # "netconsole: network logging started"
+  Netconsole module (CONFIG_NETCONSOLE=m):
+    modprobe netconsole netconsole=6665@<LPAR_IP>/ETH,6666@<R_IP>/<R_MAC>
+  Built in (=y) with CONFIG_NETCONSOLE_DYNAMIC=y, at runtime:
+    T=/sys/kernel/config/netconsole/t1; mkdir $T
+    echo ETH > $T/dev_name; echo 6665 > $T/local_port
+    echo <LPAR_IP> > $T/local_ip; echo <R_IP> > $T/remote_ip
+    echo 6666 > $T/remote_port; echo <R_MAC> > $T/remote_mac  # optional
+    echo 1 > $T/enabled          # stop: echo 0 > $T/enabled; rmdir $T
+  Built in without DYNAMIC: add to the kernel command line and reboot:
+    grubby --update-kernel=/boot/vmlinuz-$(uname -r) \
+      --args="netconsole=6665@<LPAR_IP>/ETH,6666@<R_IP>/<R_MAC>"
+  dmesg | grep -i netconsole               # "netconsole: network logging started"
+  echo "netcons test" > /dev/kmsg          # must show up on R (dmesg -n 8 if not)
 
   # load on the same interface (iperf3 -s on R)
   iperf3 -c <R_IP> -P 8 -t 300 &
