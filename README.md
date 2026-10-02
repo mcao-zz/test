@@ -219,6 +219,38 @@ When `debug_mode=on`, enables full debug output during:
 
 ---
 
+### test-veth-fixes.sh - ibmveth net-next Fixes Series
+
+Runs the tests in `TEST-PLAN-ibmveth-fixes.txt` on the
+`ibmveth-fixes-4g-lab` (AFTER) or `ibmveth-fixes-4-lab-before` (BEFORE)
+kernel. Use a second ibmveth interface, not the one your ssh session uses.
+
+**Usage:**
+```bash
+./test-veth-fixes.sh [-d dev] [-t peer_ip] [-l local_ip] [-s user@peer] [-T "0 1 2 3 4"] [-J] [-y]
+```
+
+**Tests:**
+- 0: system info and kernel config
+- 1: netconsole under load and during MTU/TSO changes (patch 1)
+- 2: forced open() failure via `debug_fail_open` (patch 2); hangs RTNL on
+  the BEFORE kernel, so it runs last and asks first
+- 3: regression: ping, iperf3, MTU 9000/1500 (patch 4)
+- 4: unbind/bind under traffic (patch 3)
+
+**Examples:**
+```bash
+# Defaults: env7, 192.168.77.1 -> 192.168.77.2, tests "0 1 3"
+./test-veth-fixes.sh -s root@lp7
+# Forced open failure only
+./test-veth-fixes.sh -T 2
+```
+
+**Output:** `/tmp/ibmveth-fixes-test-results/` (log, report to send back,
+dmesg deltas per test)
+
+---
+
 ## Test Requirements
 
 ### Hardware/Firmware

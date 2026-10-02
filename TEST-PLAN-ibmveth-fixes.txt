@@ -9,10 +9,12 @@ and netpoll races
   4 ibmveth: step past bad RX correlators instead of spinning or oopsing
 
 Kernels (github mcao-zz/linux, remote "mingupstream" on the lab)
-  AFTER  = branch ibmveth-fixes-4f-lab
-           (4 fixes d3d8d03aca36 + debug commit 71efe9b040a1).
-           ibmveth-fixes-5-lab / -5b-lab have the same code (comments
-           differ only), so results from those count too.
+  AFTER  = branch ibmveth-fixes-4g-lab
+           (4 fixes 9f504c314a9d + debug commit b71e50bf0b7e).
+           4g adds rx_dropped counting for frames dropped on a bad RX
+           slot (patch 4). ibmveth-fixes-4f-lab, -5-lab and -5b-lab
+           differ only by that counter and comments, so results from
+           those count too.
   BEFORE = branch ibmveth-fixes-4-lab-before (net-next + debug commit)
   The debug patch is NOT part of the series. It adds
   /sys/module/ibmveth/parameters/debug_fail_open: the next N
@@ -27,8 +29,15 @@ Kernels (github mcao-zz/linux, remote "mingupstream" on the lab)
 
   Get the kernel:
     git fetch mingupstream
-    git checkout -B ibmveth-fixes-4f-lab mingupstream/ibmveth-fixes-4f-lab
+    git checkout -B ibmveth-fixes-4g-lab mingupstream/ibmveth-fixes-4g-lab
     git log --oneline -5      # DEBUG commit on top of the 4 fixes
+
+  Scripted run: test-veth-fixes.sh in this repo runs tests 0-4 below.
+    ./test-veth-fixes.sh -d ETH -t <peer_ip> -l <local_ip> -s root@<peer>
+    ./test-veth-fixes.sh -d ETH -t <peer_ip> -l <local_ip> -T 2   # test 2
+  -s lets it start nc/iperf3 on the peer and count netconsole lines.
+  Defaults: -d env7 -t 192.168.77.2 -l 192.168.77.1, tests "0 1 3".
+  Test 2 always runs last; the report to send back is printed at the end.
 
   Use a SECOND ibmveth interface for the tests (ETH below), not the
   one your ssh session uses, and keep the HMC console (vterm) open.
@@ -121,6 +130,7 @@ Test 3 (all patches; patch 4 RX paths): regression on the AFTER kernel
   ip link set dev ETH mtu 9000; ping -s 8000 -c 20 <peer>
   ip link set dev ETH mtu 1500; iperf3 -c <peer> -t 30
   dmesg: no "invalid RX correlator" / "no buffer for RX correlator".
+  ip -s link show ETH: RX "dropped" does not grow during the run.
 
 ---------------------------------------------------------------------
 Test 4 (patch 3): remove under traffic, AFTER only (optional)
