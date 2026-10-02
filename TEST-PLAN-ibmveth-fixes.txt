@@ -1,0 +1,129 @@
+ibmveth fixes — LPAR test plan (P10)
+====================================
+
+Series: [PATCH net-next 0/4] ibmveth: fix RX poll hang, reopen hang
+and netpoll races
+  1 ibmveth: fix netpoll races with RX replenish
+  2 ibmveth: do not close twice after a failed reopen
+  3 ibmveth: disable the reset work before unregister in remove
+  4 ibmveth: step past bad RX correlators instead of spinning or oopsing
+
+Kernels (github mcao-zz/linux, remote "mingupstream" on the lab)
+  AFTER  = branch ibmveth-fixes-4f-lab
+           (4 fixes d3d8d03aca36 + debug commit 71efe9b040a1).
+           ibmveth-fixes-5-lab / -5b-lab have the same code (comments
+           differ only), so results from those count too.
+  BEFORE = branch ibmveth-fixes-4-lab-before (net-next + debug commit)
+  The debug patch is NOT part of the series. It adds
+  /sys/module/ibmveth/parameters/debug_fail_open: the next N
+  ibmveth_open() calls fail with -ENOMEM through open()'s real error
+  path (goto out), the same unwind an allocation failure takes.
+  Config: CONFIG_IBMVETH=y or m, CONFIG_NETCONSOLE=m (selects NETPOLL
+  and NET_POLL_CONTROLLER), CONFIG_DETECT_HUNG_TASK=y. With an O= build:
+    grep -E 'CONFIG_(IBMVETH|NETCONSOLE|NETPOLL|NET_POLL_CONTROLLER|DETECT_HUNG_TASK)=' \
+         /boot/kbuild-out/.config
+    scripts/config --file /boot/kbuild-out/.config -m NETCONSOLE
+    make O=/boot/kbuild-out olddefconfig
+
+  Get the kernel:
+    git fetch mingupstream
+    git checkout -B ibmveth-fixes-4f-lab mingupstream/ibmveth-fixes-4f-lab
+    git log --oneline -5      # DEBUG commit on top of the 4 fixes
+
+  Use a SECOND ibmveth interface for the tests (ETH below), not the
+  one your ssh session uses, and keep the HMC console (vterm) open.
+  The BEFORE run of test 2 hangs RTNL; only an LPAR restart from the
+  HMC recovers it.
+
+Record for the commit messages
+  cat /proc/cpuinfo | grep -m1 -E 'cpu|model'     # POWER10 ...
+  cat /proc/device-tree/ibm,fw-version 2>/dev/null; lsmcode -A 2>/dev/null | head
+  uname -r
+
+---------------------------------------------------------------------
+Test 1 (patch 1): netconsole over ibmveth under load — AFTER only
+---------------------------------------------------------------------
+Receiver R (another host on the same VLAN):
+  nc -u -l 6666 | tee netcons.log         # or: socat -u UDP-RECV:6666 -
+
+On the LPAR:
+  modprobe netconsole netconsole=6665@<LPAR_IP>/ETH,6666@<R_IP>/<R_MAC>
+  dmesg | tail -3                          # "netconsole: network logging started"
+
+  # load on the same interface (iperf3 -s on R)
+  iperf3 -c <R_IP> -P 8 -t 300 &
+  # printk flood while TX is busy
+  for i in $(seq 1 20000); do echo "ibmveth netcons $i" > /dev/kmsg; done
+  echo t > /proc/sysrq-trigger             # large burst (task dump)
+  wait
+
+Pass:
+  - R receives the "ibmveth netcons N" lines and the sysrq dump
+    (count: grep -c 'ibmveth netcons' netcons.log; some loss under
+    load is fine, netpoll is best effort).
+  - iperf3 keeps running; no WARN/oops in dmesg on the LPAR
+    (in particular no "exceeded budget in poll").
+  - ip -s link show ETH: RX/TX counters still moving afterwards.
+  Then, with netconsole still loaded (patch 1, netpoll during the
+  driver's internal close/open):
+  for i in $(seq 1 50); do
+    ip link set dev ETH mtu 9000; ip link set dev ETH mtu 1500
+    ethtool -K ETH tso off; ethtool -K ETH tso on
+  done &
+  for i in $(seq 1 20000); do echo "ibmveth netcons $i" > /dev/kmsg; done
+  wait
+  Pass: no oops/WARN, ETH still passes traffic afterwards.
+~15-20 minutes. No BEFORE run needed: the race itself is not
+reproduced; this shows netconsole still works without the callback.
+
+---------------------------------------------------------------------
+Test 2 (patch 2): forced open() failure on an MTU change
+---------------------------------------------------------------------
+On the LPAR (ETH up, with an IP, pingable):
+  ip link show ETH                         # note current MTU
+  echo 1 > /sys/module/ibmveth/parameters/debug_fail_open
+  ip link set dev ETH mtu 9000             # expect: Cannot allocate memory
+  dmesg | tail                             # "debug_fail_open: failing open"
+  ip link show ETH                         # still UP (IFF_UP stays set)
+  ip link set dev ETH down
+
+BEFORE expected:
+  - "ip link set dev ETH down" never returns.
+  - After ~120s dmesg shows "task ip:... blocked for more than 120
+    seconds" with napi_disable() / ibmveth_close() in the stack.
+    Save that dmesg (it is the validation evidence).
+  - Any other "ip"/"ethtool" command also hangs (RTNL held).
+  - Restart the LPAR from the HMC.
+
+AFTER expected:
+  - "ip link set dev ETH down" returns at once.
+  - ip link set dev ETH up                 # succeeds (knob is now 0)
+  - ping <peer> over ETH works; ip link show ETH shows mtu 9000.
+  - Optional: repeat with "ethtool -K ETH tso off" and with
+    echo 0 > /sys/devices/vio/<unit>/pool2/active style pool changes
+    instead of the MTU change; same result.
+
+---------------------------------------------------------------------
+Test 3 (all patches; patch 4 RX paths): regression on the AFTER kernel
+---------------------------------------------------------------------
+  ping -c 100 <peer>; iperf3 -c <peer> -P 8 -t 60
+  ip link set dev ETH mtu 9000; ping -s 8000 -c 20 <peer>
+  ip link set dev ETH mtu 1500; iperf3 -c <peer> -t 30
+  dmesg: no "invalid RX correlator" / "no buffer for RX correlator".
+
+---------------------------------------------------------------------
+Test 4 (patch 3): remove under traffic, AFTER only (optional)
+---------------------------------------------------------------------
+  From the HMC, DLPAR-remove the second virtual ethernet adapter while
+  iperf3 runs over it, then DLPAR-add it back (or, without HMC:
+  echo <unit> > /sys/bus/vio/drivers/ibmveth/unbind, then bind).
+  Pass: no oops/WARN; the re-added interface passes traffic.
+
+---------------------------------------------------------------------
+Send back
+---------------------------------------------------------------------
+  - CPU/firmware lines and uname -r
+  - Test 1: pass/fail, netconsole line count
+  - Test 2: BEFORE hung-task dmesg (or "skipped"), AFTER pass/fail
+  - Test 3: pass/fail
+  - Test 4: pass/fail or skipped

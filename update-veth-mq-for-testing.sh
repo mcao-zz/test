@@ -14,6 +14,8 @@ BRANCHES=(
     "veth-mq-phase3-h-function-handling"
     "veth-mq-phase2"
     "veth-mq-phase2-per-queue-pools"
+    "ibmveth-fixes-4f-lab"
+    "ibmveth-fixes-4-lab-before"
 )
 
 # Parse command line arguments

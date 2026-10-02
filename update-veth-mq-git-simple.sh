@@ -10,6 +10,8 @@ BRANCHES=(
     "veth-mq-phase3"
     "veth-mq-phase3-h-function-handling"
     "veth-mq-for-testing"
+    "ibmveth-fixes-4f-lab"
+    "ibmveth-fixes-4-lab-before"
 )
 
 # If branch provided as argument, use it
