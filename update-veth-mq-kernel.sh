@@ -10,6 +10,7 @@ BRANCHES=(
     "veth-mq-phase3"
     "veth-mq-phase3-h-function-handling"
     "veth-mq-for-testing"
+    "ibmveth-fixes-7-lab"
     "ibmveth-fixes-4g-lab"
     "ibmveth-fixes-4f-lab"
     "ibmveth-fixes-4-lab-before"

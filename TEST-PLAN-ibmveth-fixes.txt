@@ -1,12 +1,34 @@
 ibmveth fixes — LPAR test plan (P10)
 ====================================
 
-Series: [PATCH net-next 0/4] ibmveth: fix RX poll hang, reopen hang
-and netpoll races
+Series: [PATCH net-next 0/7] ibmveth: fix hangs, use-after-frees and
+netpoll races
   1 ibmveth: fix netpoll races with RX replenish
   2 ibmveth: do not close twice after a failed reopen
   3 ibmveth: disable the reset work before unregister in remove
   4 ibmveth: step past bad RX correlators instead of spinning or oopsing
+  5 ibmveth: release the pool kobjects when probe fails
+  6 ibmveth: return the error when set_channels cannot add TX queues
+  7 ibmveth: wait for in-flight transmits in ibmveth_close()
+
+Patches 5-7 (tests 5-7): branch ibmveth-fixes-7-lab = the 7 fixes + a
+debug commit with knobs under /sys/module/ibmveth/parameters/:
+  debug_fail_probe   next N probes fail register_netdev() with -EINTR
+  debug_fail_tx_ltb  next N TX buffer allocations fail with -ENOMEM
+  debug_fail_open    as before (test 2)
+On the 4-nn kernel, rebuilding only the module is enough
+(CONFIG_IBMVETH=m):
+  git fetch mingupstream
+  git checkout -B ibmveth-fixes-7-lab mingupstream/ibmveth-fixes-7-lab
+  make O=/boot/kbuild-out M=drivers/net/ethernet/ibm modules
+  ./install-and-reload-module.sh      # or reload ibmveth as usual
+  ./test-veth-fixes.sh -d ETH -t <peer_ip> -l <local_ip> -T "7 6 5" -s root@<peer>
+  Test 7: 20 rounds of MTU, rx-csum and TSO changes under iperf3.
+  Test 6: ethtool -L tx 1 -> forced alloc failure -> ethtool -L tx 8 must
+          fail and leave 1 queue; then tx 8 without the knob must work.
+  Test 5: unbind, bind with a forced probe failure: no pool%d dirs may
+          remain; bind again: pool0/num readable, traffic, no
+          "duplicate filename" in dmesg. Unbinds ETH: not your ssh NIC.
 
 Kernels (github mcao-zz/linux, remote "mingupstream" on the lab)
   AFTER  = branch ibmveth-fixes-4g-lab

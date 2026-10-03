@@ -1,14 +1,18 @@
 #!/bin/bash
 
 # IBM Virtual Ethernet (ibmveth) net-next fixes - LPAR test script
-# Covers TEST-PLAN-ibmveth-fixes.txt for the 4-patch series:
+# Covers TEST-PLAN-ibmveth-fixes.txt for the 7-patch series:
 #   1 ibmveth: fix netpoll races with RX replenish
 #   2 ibmveth: do not close twice after a failed reopen
 #   3 ibmveth: disable the reset work before unregister in remove
 #   4 ibmveth: step past bad RX correlators instead of spinning or oopsing
+#   5 ibmveth: release the pool kobjects when probe fails
+#   6 ibmveth: return the error when set_channels cannot add TX queues
+#   7 ibmveth: wait for in-flight transmits in ibmveth_close()
 #
-# Kernels: AFTER  = ibmveth-fixes-4g-lab (fixes + debug_fail_open)
-#          BEFORE = ibmveth-fixes-4-lab-before (net-next + debug_fail_open)
+# Kernel/module: ibmveth-fixes-7-lab (7 fixes + debug knobs). Tests 5 and 6
+#   need its debug_fail_probe / debug_fail_tx_ltb knobs. Tests 1-4 were run
+#   on ibmveth-fixes-4g-lab / 4-lab-before.
 #
 # Run on a SECOND ibmveth interface, not the one your ssh session uses.
 #
@@ -54,7 +58,7 @@ Options:
   -m PEER_MAC   peer MAC for netconsole (default: broadcast)
   -s USER@HOST  ssh to the peer: starts the netconsole listener and
                 iperf3 server there and counts received lines
-  -T "LIST"     tests to run (default: "$TESTS"; all: "0 1 2 3 4")
+  -T "LIST"     tests to run (default: "$TESTS"; all: "0 1 2 3 4 5 6 7")
                   0 system info and config
                   1 netconsole under load and during MTU/TSO changes (patch 1)
                   2 forced open() failure on an MTU change (patch 2)
@@ -62,6 +66,10 @@ Options:
                     the LPAR is restarted from the HMC
                   3 regression: ping, iperf3, MTU changes (patch 4 RX paths)
                   4 unbind/bind under traffic (patch 3)
+                  5 forced probe failure: pool sysfs dirs removed (patch 5)
+                  6 ethtool -L with a forced TX buffer allocation failure
+                    (patch 6)
+                  7 MTU and rx-csum/TSO changes under traffic (patch 7)
   -J            peer is at MTU 9000: also ping -s 8000 at MTU 9000
   -y            do not ask before test 2
   -h            show this help
@@ -70,6 +78,7 @@ Examples:
   $0 -d env7 -t 192.168.77.2 -l 192.168.77.1 -s root@lp7
   $0 -d env7 -t 192.168.77.2 -l 192.168.77.1 -T "2"     # AFTER kernel
   $0 -d env7 -t 192.168.77.2 -l 192.168.77.1 -T "0 1 2 3 4" -s root@lp7
+  $0 -d env7 -t 192.168.77.2 -l 192.168.77.1 -T "7 6 5" -s root@lp7
 EOF
     exit 1
 }
@@ -208,6 +217,8 @@ restore() {
     }
     ip link set dev "$INTERFACE" mtu "$ORIG_MTU" 2>/dev/null
     ethtool -K "$INTERFACE" tso on > /dev/null 2>&1
+    ethtool -K "$INTERFACE" rx on > /dev/null 2>&1
+    [ -n "${ORIG_TX:-}" ] && ethtool -L "$INTERFACE" tx "$ORIG_TX" > /dev/null 2>&1
 }
 trap restore EXIT
 
@@ -402,6 +413,156 @@ if want 4; then
     fi
     dmesg_check "test4" || R=1
     check_result $R "Test 4: unbind/bind under traffic"
+    log ""
+fi
+
+# ---------------------------------------------------------------------
+# Test 7: MTU and offload changes under traffic (patch 7)
+# ---------------------------------------------------------------------
+if want 7; then
+    log "${BLUE}--- Test 7: MTU and rx-csum/TSO changes under traffic (patch 7) ---${NC}"
+    dmesg_mark
+    R=0
+    LOAD_PID=""
+    if command -v iperf3 > /dev/null; then
+        peer_run "pgrep iperf3 > /dev/null || iperf3 -s -D" > /dev/null 2>&1
+        iperf3 -c "$PEER_IP" -B "$LOCAL_IP" -P 8 -t 300 > /dev/null 2>&1 &
+        LOAD_PID=$!
+    else
+        log "  ${YELLOW}iperf3 not installed; using ping -f${NC}"
+        ping -f -I "$INTERFACE" "$PEER_IP" > /dev/null 2>&1 &
+        LOAD_PID=$!
+    fi
+    sleep 3
+    N=20
+    log "  $N rounds of: mtu 9000/$ORIG_MTU, rx off/on, tso off/on"
+    for ((i = 1; i <= N; i++)); do
+        ip link set dev "$INTERFACE" mtu 9000 || R=1
+        ip link set dev "$INTERFACE" mtu "$ORIG_MTU" || R=1
+        ethtool -K "$INTERFACE" rx off > /dev/null 2>&1
+        ethtool -K "$INTERFACE" rx on > /dev/null 2>&1
+        ethtool -K "$INTERFACE" tso off > /dev/null 2>&1
+        ethtool -K "$INTERFACE" tso on > /dev/null 2>&1
+    done
+    kill "$LOAD_PID" 2>/dev/null; wait "$LOAD_PID" 2>/dev/null
+    ensure_ip
+    sleep 2
+    peer_ping 10 || { log "  ${RED}no traffic after the changes${NC}"; R=1; }
+    dmesg_check "test7" || R=1
+    check_result $R "Test 7: MTU and rx-csum/TSO changes under traffic"
+    log ""
+fi
+
+# ---------------------------------------------------------------------
+# Test 6: ethtool -L with a forced TX buffer allocation failure (patch 6)
+# ---------------------------------------------------------------------
+tx_now() {
+    ethtool -l "$INTERFACE" 2>/dev/null |
+        awk -v want="$1" '$0 ~ want {c=1} c && /^TX:/ {print $2; exit}'
+}
+if want 6; then
+    log "${BLUE}--- Test 6: ethtool -L with a forced TX buffer allocation failure (patch 6) ---${NC}"
+    KNOB=/sys/module/ibmveth/parameters/debug_fail_tx_ltb
+    ensure_ip
+    ORIG_TX=$(tx_now "Current hardware")
+    MAX_TX=$(tx_now "Pre-set maximums")
+    GOAL=$(( ${MAX_TX:-1} < 8 ? ${MAX_TX:-1} : 8 ))
+    if [ ! -w "$KNOB" ]; then
+        skip_test "Test 6: ethtool -L allocation failure" "no $KNOB; build a *-lab branch"
+    elif [ "$GOAL" -lt 2 ]; then
+        skip_test "Test 6: ethtool -L allocation failure" "only $MAX_TX TX queue(s)"
+    else
+        dmesg_mark
+        R=0
+        log "  TX queues: current $ORIG_TX, max $MAX_TX"
+        ethtool -L "$INTERFACE" tx 1 || R=1
+        echo 1 > "$KNOB"
+        if ethtool -L "$INTERFACE" tx "$GOAL" 2> "$RESULTS_DIR/t6.err"; then
+            log "  ${RED}ethtool -L tx $GOAL returned success although the allocation failed (the bug)${NC}"
+            R=1
+        else
+            log "  ethtool -L tx $GOAL failed as expected: $(tr '\n' ' ' < "$RESULTS_DIR/t6.err")"
+        fi
+        echo 0 > "$KNOB"
+        CUR=$(tx_now "Current hardware")
+        log "  TX queues after the failed change: $CUR (expect 1)"
+        [ "$CUR" = 1 ] || R=1
+        ethtool -L "$INTERFACE" tx "$GOAL" || { log "  ${RED}ethtool -L tx $GOAL failed without the knob${NC}"; R=1; }
+        CUR=$(tx_now "Current hardware")
+        log "  TX queues after a normal change: $CUR (expect $GOAL)"
+        [ "$CUR" = "$GOAL" ] || R=1
+        peer_ping 10 || { log "  ${RED}no traffic${NC}"; R=1; }
+        ethtool -L "$INTERFACE" tx "$ORIG_TX" || R=1
+        dmesg_check "test6" || R=1
+        check_result $R "Test 6: ethtool -L returns the allocation error"
+    fi
+    log ""
+fi
+
+# ---------------------------------------------------------------------
+# Test 5: forced probe failure leaves no pool kobjects (patch 5)
+# ---------------------------------------------------------------------
+if want 5; then
+    log "${BLUE}--- Test 5: forced probe failure, then rebind (patch 5) ---${NC}"
+    KNOB=/sys/module/ibmveth/parameters/debug_fail_probe
+    if [ ! -w "$KNOB" ]; then
+        skip_test "Test 5: forced probe failure" "no $KNOB; build a *-lab branch"
+    else
+        dmesg_mark
+        R=0
+        UNIT=$(basename "$(readlink -f "/sys/class/net/$INTERFACE/device")")
+        DRV=/sys/bus/vio/drivers/ibmveth
+        DEVDIR=/sys/bus/vio/devices/$UNIT
+        log "  unbind $UNIT"
+        echo "$UNIT" > "$DRV/unbind" || R=1
+        sleep 1
+        log "  bind $UNIT with debug_fail_probe=1 (probe must fail)"
+        echo 1 > "$KNOB"
+        echo "$UNIT" > "$DRV/bind" 2>/dev/null
+        echo 0 > "$KNOB"
+        sleep 1
+        if ls "$DEVDIR/net" > /dev/null 2>&1; then
+            log "  ${RED}a netdev exists: the forced failure did not take effect${NC}"
+            R=1
+        fi
+        if [ -d "$DEVDIR/pool0" ]; then
+            log "  ${RED}pool0..pool4 are still in sysfs after the failed probe (the bug).${NC}"
+            log "  ${RED}Not reading them: their memory was freed.${NC}"
+            R=1
+        else
+            log "  no pool%d directories left after the failed probe"
+        fi
+        log "  bind $UNIT again"
+        echo "$UNIT" > "$DRV/bind" || R=1
+        NEWIF=""
+        for ((i = 0; i < 20; i++)); do
+            NEWIF=$(ls "$DEVDIR/net" 2>/dev/null | head -1)
+            [ -n "$NEWIF" ] && break
+            sleep 1
+        done
+        if [ -z "$NEWIF" ]; then
+            log "  ${RED}no netdev after the second bind${NC}"
+            R=1
+        else
+            [ "$NEWIF" != "$INTERFACE" ] && log "  ${YELLOW}interface came back as $NEWIF${NC}" && INTERFACE=$NEWIF
+            if [ -r "$DEVDIR/pool0/num" ]; then
+                log "  pool0/num after rebind: $(cat "$DEVDIR/pool0/num")"
+            else
+                log "  ${RED}pool0 missing after rebind${NC}"
+                R=1
+            fi
+            ensure_ip
+            sleep 2
+            peer_ping 10 || { log "  ${RED}no traffic after rebind${NC}"; R=1; }
+        fi
+        if dmesg | tail -n $(( $(dmesg | wc -l) - DMESG_MARKER )) | grep -q "duplicate filename"; then
+            log "  ${RED}sysfs reported a duplicate pool directory on rebind (the bug)${NC}"
+            R=1
+        fi
+        dmesg_check "test5" || R=1
+        check_result $R "Test 5: forced probe failure removes pool kobjects"
+        [ "$R" -ne 0 ] && log "  ${YELLOW}Stale pool kobjects may remain; reboot before further tests.${NC}"
+    fi
     log ""
 fi
 
