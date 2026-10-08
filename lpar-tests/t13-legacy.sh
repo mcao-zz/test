@@ -1,5 +1,5 @@
 #!/bin/bash
-# T13 — true legacy adapter regression (non-MQ firmware)
+# T13 — true legacy adapter regression (non-MQ firmware, max_rx=1)
 #
 # Legacy means PHYP without ILLAN RX multi-queue: ethtool -l
 #   Pre-set maximums: RX: 1
@@ -10,7 +10,14 @@
 # that stay on the classic !multi_queue open/poll/hcall path after the
 # MQ series refactors (P05/P06/P09/…).
 #
-#   sudo IFACE=net0 PEER=192.168.100.2 ./t13-legacy.sh
+# v8-specific checks (see gap analysis):
+#   L1. replenish_no_mem present in ethtool -S
+#   L2. rx0_polls advances under traffic (SQ NAPI single-poll path)
+#   L3. sysfs rx_missed_errors readable (ndo_get_stats64 hw_drop_overruns)
+#   L4. no-op ethtool -L rx 1 succeeds (no-op fires before mq_fallback gate)
+#   L7. tx0_send_failures row present (tx%d_send_failures, one TX queue)
+#
+#   sudo IFACE=env7 PEER=192.168.100.2 ./t13-legacy.sh
 #
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -115,6 +122,60 @@ rows=$(count_rx_stat_rows)
 [[ "$rows" -eq 1 ]] || die "rx*_interrupts rows=$rows want 1"
 ok "ethtool -S rx*_interrupts rows=1"
 ethtool -S "$IFACE" >"$LOGDIR/t13-stats.txt" || die "ethtool -S failed"
+
+# ── v8 ethtool -S key smoke on legacy ────────────────────────────────────
+log "--- v8 ethtool -S key checks ---"
+
+# L1: replenish_no_mem must be present (adapter-level, always in ibmveth_stats[])
+v=$(stat_val replenish_no_mem)
+[[ -n "$v" ]] || die "L1: missing ethtool -S counter: replenish_no_mem"
+ok "L1: replenish_no_mem=$v present in ethtool -S"
+
+# hcall_* must be absent (dropped in v8)
+if ethtool -S "$IFACE" 2>/dev/null | grep -qE '^[[:space:]]*hcall_'; then
+	warn "L1: ethtool -S still has hcall_* keys (v8 dropped them — wrong .ko?)"
+else
+	ok "L1: hcall_* correctly absent from ethtool -S"
+fi
+
+# rx%d_packets must be absent (qstats-only per Documentation/networking/statistics.rst)
+if ethtool -S "$IFACE" 2>/dev/null | grep -qE '^[[:space:]]*rx[0-9]+_packets:'; then
+	warn "L1: rx%d_packets present in ethtool -S — should be qstats-only; wrong .ko?"
+else
+	ok "L1: rx%d_packets correctly absent from ethtool -S"
+fi
+
+# L7: tx0_send_failures must be present (one TX queue on legacy)
+tx_rows=$(count_tx_stat_rows)
+[[ "$tx_rows" -ge 1 ]] || die "L7: tx*_send_failures rows=$tx_rows want >=1"
+ok "L7: tx*_send_failures rows=$tx_rows (tx0_send_failures present)"
+
+# L2: rx0_polls must advance under traffic (SQ NAPI single-poll path)
+log "--- L2: rx0_polls advance under traffic ---"
+polls_before=$(stat_val rx0_polls); polls_before=${polls_before:-0}
+ping -I "$IFACE" -c 30 -W 1 "$PEER" >/dev/null 2>&1 || true
+sleep 1
+polls_after=$(stat_val rx0_polls); polls_after=${polls_after:-0}
+polls_delta=$((polls_after - polls_before))
+log "rx0_polls: $polls_before → $polls_after (Δ=$polls_delta)"
+[[ "$polls_delta" -ge 1 ]] || \
+	die "L2: rx0_polls did not advance under ping (Δ=$polls_delta) — SQ NAPI poll path broken"
+ok "L2: rx0_polls advanced under traffic (Δ=$polls_delta)"
+
+# L3: sysfs rx_missed_errors readable (ndo_get_stats64 hw_drop_overruns proxy)
+log "--- L3: sysfs rx_missed_errors ---"
+sysfs_missed=$(cat "/sys/class/net/${IFACE}/statistics/rx_missed_errors" 2>/dev/null || true)
+[[ -n "$sysfs_missed" ]] || \
+	die "L3: /sys/class/net/$IFACE/statistics/rx_missed_errors not readable"
+ok "L3: sysfs rx_missed_errors=$sysfs_missed (hw_drop_overruns proxy reachable on legacy)"
+
+# L4: no-op ethtool -L rx 1 must succeed (no-op fires before mq_fallback gate)
+log "--- L4: no-op ethtool -L rx 1 ---"
+ethtool -L "$IFACE" rx 1 || die "L4: ethtool -L rx 1 (no-op) failed on legacy"
+cur_after_noop=$(current_rx)
+[[ "$cur_after_noop" -eq 1 ]] || \
+	die "L4: RX changed from 1 to $cur_after_noop after no-op -L rx 1"
+ok "L4: no-op ethtool -L rx 1 succeeded, RX=1 unchanged"
 
 cmo=$(find /sys/bus/vio/devices -name cmo_entitled 2>/dev/null | head -1 || true)
 if [[ -n "$cmo" ]]; then

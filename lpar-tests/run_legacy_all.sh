@@ -96,6 +96,9 @@ run t13-legacy bash "$DIR/t13-legacy.sh"
 
 # Stats / coherence (SQ)
 [[ "${SKIP_STATS:-0}" = 1 ]] || run t12-stats "$DIR/t12-stats-debugfs.sh"
+[[ "${SKIP_T24:-0}" = 1 ]] || run t24-qstats "$DIR/t24-qstats-abi.sh"
+# debugfs geometry: on legacy RX_LIST=1 4 8 skips N>1 via max_rx guard
+[[ "${SKIP_T11:-0}" = 1 ]] || run t11-debugfs "$DIR/t11-debugfs-geometry.sh"
 if [[ "$EXTERNAL_IPERF" = 1 ]]; then
 	[[ "${SKIP_T22:-0}" = 1 ]] || \
 		run t22-coherence env UNDER_RX=1 "$DIR/t22-stats-coherence.sh"
@@ -119,3 +122,4 @@ check_no_oops
 ping_ok
 ok "LEGACY suite PASS on $IFACE"
 log "Done. (Skipped MQ-only: T14, L-cycle, T8/T17 stash stress, T19 multi-RX, T20 MQ restore)"
+log "  SKIP_T11=1 / SKIP_T24=1 to skip debugfs geometry / qstats ABI"

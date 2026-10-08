@@ -65,8 +65,11 @@ run_rx_1_all.sh stages
 run_legacy_all.sh
 -----------------
 
-  Requires max_rx==1. Runs T13, t12/t22/t10, t23, t21 (RSS unsupported),
-  close-sq. Skips MQ-only (T14, L-cycle, T19 multi-RX, T20 MQ restore).
+  Requires max_rx==1 (true non-MQ firmware, e.g. env7).
+  Runs T13 (v8 key smoke + lifecycle), t12, t24 (qstats), t11 (debugfs),
+  t22, t10, t23, t21 (RSS unsupported), close-sq.
+  Skips MQ-only: T14, L-cycle, T19 multi-RX, T20 MQ restore.
+  Use IFACE=env7 PEER=<env7-peer> with this suite.
 
 
 Knobs (sudo KEY=val ./run_….sh  or  ./run_….sh KEY=val)
@@ -102,7 +105,10 @@ Knobs (sudo KEY=val ./run_….sh  or  ./run_….sh KEY=val)
     SKIP_CHURN SKIP_CLOSE SKIP_SOAK SKIP_BOUNCE SKIP_T10 SKIP_T22
 
   run_legacy_all only:
-    ROUNDS (close-sq)  SKIP_STATS SKIP_T22 SKIP_T10 SKIP_T23 SKIP_T21 SKIP_CLOSE
+     ROUNDS (close-sq)
+     SKIP_STATS SKIP_T24 SKIP_T11 SKIP_T22 SKIP_T10 SKIP_T23 SKIP_T21 SKIP_CLOSE
+     (SKIP_T11: debugfs geometry — skips N>1 resize internally, safe on legacy)
+     (SKIP_T24: qstats ABI — skips gracefully if KERNEL_SRC missing)
 
 
 Traffic helpers
@@ -118,9 +124,10 @@ Same-L2 rule
 ------------
 
   PEER must be on the same L2 as IFACE.
-  MQ example:  IFACE=env9  PEER=192.168.1.153  DUT_IP=192.168.1.133
-  Legacy:      IFACE=net0  PEER=10.48.36.153   DUT_IP=10.48.36.x
+  MQ example:  IFACE=env9  PEER=192.168.100.2  DUT_IP=192.168.100.3
+  Legacy:      IFACE=env7  PEER=<env7-peer-ip>  DUT_IP=<env7-dut-ip>
   Do not use public peer with env9 (false ping PASSes without -I).
+  env7 and env9 are on different L2 segments — use matching PEER for each.
 
 
 More docs
