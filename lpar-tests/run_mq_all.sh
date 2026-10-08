@@ -189,6 +189,7 @@ if [[ "${SKIP_QUIET:-0}" != 1 ]]; then
 		fi
 	fi
 	[[ "${SKIP_STATS:-0}" = 1 ]] || run t12-stats "$DIR/t12-stats-debugfs.sh"
+	[[ "${SKIP_T24:-0}" = 1 ]] || run t24-qstats "$DIR/t24-qstats-abi.sh"
 	# EXTERNAL_IPERF: one UNDER_RX coherence pass here; skip heavy re-run.
 	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
 		[[ "${SKIP_T22:-0}" = 1 ]] || \
@@ -198,6 +199,7 @@ if [[ "${SKIP_QUIET:-0}" != 1 ]]; then
 	fi
 	[[ "${SKIP_T10:-0}" = 1 ]] || run t10-lifetime "$DIR/t10-stats-lifetime.sh"
 	[[ "${SKIP_T11:-0}" = 1 ]] || run t11-debugfs "$DIR/t11-debugfs-geometry.sh"
+	[[ "${SKIP_T25:-0}" = 1 ]] || run t25-fallback "$DIR/t25-mq-fallback.sh"
 	[[ "${SKIP_STASH:-0}" = 1 ]] || run t8-stash "$DIR/t8-down-stash.sh"
 	[[ "${SKIP_T17:-0}" = 1 ]] || run t17-down-irqs "$DIR/t17-down-no-live-irqs.sh"
 	[[ "${SKIP_CHANNELS:-0}" = 1 ]] || run t19-channels "$DIR/t19-set-channels.sh"
