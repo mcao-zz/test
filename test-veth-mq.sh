@@ -164,7 +164,7 @@ capture_stats_delta() {
             "rx_no_buffer"
         )
 
-        echo "Hypercall & Error Counters:"
+        echo "Adapter & Error Counters:"
         for stat in "${stats[@]}"; do
             local before=$(get_stat_value "$before_file" "$stat")
             local after=$(get_stat_value "$after_file" "$stat")
@@ -416,7 +416,7 @@ set_queue_count() {
         log "  Validation 1 - ethtool -l: $new_count queues"
 
         # Validation 2: Count per-queue statistics
-        local stats_count=$(ethtool -S "$INTERFACE" | grep -E "^ *rx[0-9]+_packets:" | wc -l)
+        local stats_count=$(ethtool -S "$INTERFACE" | grep -E "^ *rx[0-9]+_interrupts:" | wc -l)
         log "  Validation 2 - Per-queue stats: $stats_count rx queues"
 
         # Validation 3: Count active interrupts
@@ -617,9 +617,9 @@ ethtool -S "$INTERFACE" > "$STATS_BEFORE"
 log "✓ Initial statistics captured ($(wc -l < "$STATS_BEFORE") lines)"
 log ""
 
-# Display initial queue stats
+# Display initial queue stats (v8: per-queue key is rx*_interrupts; packets are in sysfs)
 log "Initial Per-Queue Statistics:"
-grep -E "^rx[0-9]+_packets:" "$STATS_BEFORE" | head -10 | tee -a "$LOG_FILE"
+grep -E "^rx[0-9]+_interrupts:" "$STATS_BEFORE" | head -10 | tee -a "$LOG_FILE"
 log ""
 
 # Initialize dmesg marker and capture baseline
@@ -713,18 +713,19 @@ capture_interrupts "After traffic"
 log "=== 10. Statistics After Traffic ==="
 ethtool -S "$INTERFACE" > "$STATS_AFTER_TRAFFIC"
 
-# Show both TX and RX distribution
-log "Per-Queue TX Distribution:"
-grep -E "^ *tx[0-9]+_packets:" "$STATS_AFTER_TRAFFIC" | tee -a "$LOG_FILE"
+# Show both TX and RX distribution (v8: per-queue ethtool keys are *_send_failures / *_interrupts;
+# packets/bytes live in netdev_stat_ops / sysfs, not ethtool -S)
+log "Per-Queue TX send_failures:"
+grep -E "^ *tx[0-9]+_send_failures:" "$STATS_AFTER_TRAFFIC" | tee -a "$LOG_FILE"
 log ""
-log "Per-Queue RX Distribution:"
-grep -E "^ *rx[0-9]+_packets:" "$STATS_AFTER_TRAFFIC" | tee -a "$LOG_FILE"
+log "Per-Queue RX interrupts:"
+grep -E "^ *rx[0-9]+_interrupts:" "$STATS_AFTER_TRAFFIC" | tee -a "$LOG_FILE"
 log ""
 
-# Validate RX traffic distribution across queues
-ACTIVE_RX_QUEUES=$(grep -E "^ *rx[0-9]+_packets:" "$STATS_AFTER_TRAFFIC" | awk '$2 > 0 {count++} END {print count}')
+# Validate RX queue activity: use interrupt counts as proxy for queue activity
+ACTIVE_RX_QUEUES=$(grep -E "^ *rx[0-9]+_interrupts:" "$STATS_AFTER_TRAFFIC" | awk '$2 > 0 {count++} END {print count}')
 ACTIVE_RX_QUEUES=${ACTIVE_RX_QUEUES:-0}
-log "Active RX queues: $ACTIVE_RX_QUEUES"
+log "Active RX queues (by interrupts): $ACTIVE_RX_QUEUES"
 
 # If we used inbound traffic (sshpass available), expect multi-queue distribution
 if command -v sshpass >/dev/null 2>&1 && [ -n "$LOCAL_IP" ]; then
@@ -736,7 +737,7 @@ if command -v sshpass >/dev/null 2>&1 && [ -n "$LOCAL_IP" ]; then
 else
     # Outbound traffic - ping replies expected on single queue
     if [ "$ACTIVE_RX_QUEUES" -gt 0 ]; then
-        log "${CYAN}ℹ${NC} Outbound test: RX traffic on $ACTIVE_RX_QUEUES queue(s) (ping replies)"
+        log "${CYAN}ℹ${NC} Outbound test: RX activity on $ACTIVE_RX_QUEUES queue(s) (ping replies)"
         log "    Install sshpass for true RX RSS testing with inbound traffic"
     fi
 fi

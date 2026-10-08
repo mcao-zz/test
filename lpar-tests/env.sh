@@ -1437,7 +1437,7 @@ On PEER ($PEER):
   iperf3 -c \$DUT_IP -t 3600 -P 4 -p 5201 &
 
 On DUT, wait until counters move, then type yes:
-  watch -n1 'ethtool -S $IFACE | grep -E "rx[0-9]+_packets" | head'
+  watch -n1 'ethtool -S $IFACE | grep -E "rx[0-9]+_interrupts" | head'
 
 Need Δ>=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s (queues>=$MIN_ACTIVE_RX_QUEUES).
 DUT listening as $dut_ip on: $IPERF_PORTS
@@ -1464,7 +1464,7 @@ On PEER ($PEER), run NOW (old clients died during quiet reload/ifdown):
   done
 
 On DUT, confirm RX climbing:
-  watch -n1 'ethtool -S $IFACE | grep -E "rx[0-9]+_packets" | head'
+  watch -n1 'ethtool -S $IFACE | grep -E "rx[0-9]+_interrupts" | head'
 
 Then type yes. Need Δ>=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s and
 >=$MIN_ACTIVE_RX_QUEUES queues at RX=$MQ_PROOF_RX.
