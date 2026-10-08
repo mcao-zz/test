@@ -1286,8 +1286,9 @@ Low/zero RX Δ on $IFACE. Do this on peer BEFORE typing R:
   # then full:
   for p in $IPERF_PORTS; do iperf3 -c \$DUT_IP -t 3600 -P 4 -p \$p & done
 
-On DUT, watch:  watch -n1 "ethtool -S $IFACE | grep rx0_interrupts"
-Only type R when that counter is climbing.
+On DUT, watch all queues:
+  watch -n2 'ethtool -S $IFACE | awk "/rx[0-9]+_interrupts/{printf \"  %-30s %s\\n\",\$1,\$2}"'
+Only type R when counters are climbing across multiple queues.
 ----------------------------------------------------------------------
 EOF
 }
@@ -1373,6 +1374,8 @@ prove_mq_rx_under_load() {
 	total=$((b_pkts - a_pkts))
 
 	log "=== $label: ${wait}s MQ sample (need Δ>=$min_delta AND >=$min_q active queues; nq=$nq) ==="
+	log "  Queue  irq-Δ   poll-Δ  status"
+	log "  -----  ------  ------  ------"
 	while read -r q irq pol; do
 		b_irq=$(awk -v q="$q" '$1 == q { print $2; exit }' "$before_file")
 		b_pol=$(awk -v q="$q" '$1 == q { print $3; exit }' "$before_file")
@@ -1381,19 +1384,22 @@ prove_mq_rx_under_load() {
 		d_pol=$((pol - b_pol))
 		if [[ "$d_irq" -gt 0 || "$d_pol" -gt 0 ]]; then
 			active=$((active + 1))
-			log "  rx${q} interrupts Δ=$d_irq polls Δ=$d_pol"
+			log "  rx${q}    $(printf '%6d' $d_irq)  $(printf '%6d' $d_pol)  ACTIVE"
+		else
+			log "  rx${q}    $(printf '%6d' $d_irq)  $(printf '%6d' $d_pol)  idle"
 		fi
 	done <"$after_file"
+	log "  -----  ------  ------  ------"
+	log "  total rx_packets Δ=$total  active=$active/$nq  (need Δ>=$min_delta, queues>=$min_q)"
 	rm -f "$before_file" "$after_file"
 
-	log "$label: sysfs rx_packets Δ=$total active_queues=$active/$nq"
 	[[ "$total" -ge "$min_delta" ]] || \
 		die "$label FAIL: bulk RX not proven (Δ=$total < $min_delta) — keep lp7 iperf running"
 	if [[ "$nq" -ge 4 ]]; then
 		[[ "$active" -ge "$min_q" ]] || \
-			die "$label FAIL: MQ spread not proven (only $active queue(s) got interrupts/polls, need >=$min_q). Check lp7 multi-port/multi-P clients."
+			die "$label FAIL: MQ spread not proven (only $active/$nq queue(s) active, need >=$min_q). Check lp7 multi-port/-P clients."
 	fi
-	ok "$label: MQ RX under load proven (Δ=$total, $active/$nq queues)"
+	ok "$label: MQ RX under load proven (Δ=$total, $active/$nq queues active)"
 }
 
 # Interactive: print lp7 commands, wait for "yes", prove bulk + MQ RX.
@@ -1450,7 +1456,7 @@ On PEER ($PEER):
   iperf3 -c \$DUT_IP -t 3600 -P 4 -p 5201 &
 
 On DUT, wait until counters move, then type yes:
-  watch -n1 'ethtool -S $IFACE | grep -E "rx[0-9]+_interrupts" | head'
+  watch -n2 'ethtool -S $IFACE | awk "/rx[0-9]+_interrupts/{printf \"  %-30s %s\\n\",\$1,\$2}"'
 
 Need Δ>=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s (queues>=$MIN_ACTIVE_RX_QUEUES).
 DUT listening as $dut_ip on: $IPERF_PORTS
@@ -1476,8 +1482,8 @@ On PEER ($PEER), run NOW (old clients died during quiet reload/ifdown):
     iperf3 -c \$DUT_IP -t 3600 -P 4 -p \$p &
   done
 
-On DUT, confirm RX climbing:
-  watch -n1 'ethtool -S $IFACE | grep -E "rx[0-9]+_interrupts" | head'
+On DUT, confirm all queues climbing:
+  watch -n2 'ethtool -S $IFACE | awk "/rx[0-9]+_interrupts/{printf \"  %-30s %s\\n\",\$1,\$2}"'
 
 Then type yes. Need Δ>=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s and
 >=$MIN_ACTIVE_RX_QUEUES queues at RX=$MQ_PROOF_RX.
