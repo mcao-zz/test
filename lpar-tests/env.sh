@@ -246,10 +246,23 @@ count_tx_stat_rows() {
 }
 
 count_iface_irqs() {
-	# grep -c exits 1 when count is 0 — must not also echo 0 (would print "0\n0").
-	local n
-	n=$(grep -c "${IFACE}" /proc/interrupts 2>/dev/null) || true
-	echo "${n:-0}"
+	# v8 IRQ naming: queue 0 uses netdev->name (e.g. "env9"); subordinate
+	# queues use "ibmveth-<unit_address_hex>-rxN" (e.g. "ibmveth-30000009-rx1").
+	# Must count both patterns to get the true queue count.
+	local n vio sub
+	# queue 0: netdev name (exact suffix match avoids partial hits)
+	n=$(grep -c " ${IFACE}$" /proc/interrupts 2>/dev/null) || true
+	n=${n:-0}
+	# subordinate queues (v8): "ibmveth-<vio_unit_addr_hex>-rxN"
+	# Derive vio device name (= unit address hex) from sysfs device symlink.
+	if [[ -e "/sys/class/net/${IFACE}/device" ]]; then
+		vio=$(basename "$(readlink -f "/sys/class/net/${IFACE}/device")" 2>/dev/null || true)
+		if [[ -n "$vio" ]]; then
+			sub=$(grep -c "ibmveth-${vio}-rx" /proc/interrupts 2>/dev/null) || true
+			n=$((n + ${sub:-0}))
+		fi
+	fi
+	echo "$n"
 }
 
 stat_val() {
