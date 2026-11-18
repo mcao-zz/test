@@ -265,8 +265,9 @@ See **[SERIES.md](SERIES.md)** (split 2026-11-17). Lab fetch:
 ./update-veth-mq-git-simple.sh veth-mq-s2          # MQ enable (later)
 ```
 
-LPAR s1: `sudo ./lpar-tests/run_s1_all.sh` (legacy suite, skip debugfs).
-Do not run T3 / `run_mq_all` on s1. QEMU stand-in: [QEMU-S1.txt](QEMU-S1.txt).
+LPAR s1: `sudo ./lpar-tests/run_s1_all.sh` (legacy suite; skip debugfs
+and qstats — same ABI as QEMU s1). Do not run T3 / `run_mq_all` on s1.
+QEMU stand-in: [QEMU-S1.txt](QEMU-S1.txt).
 
 ## Validation plan
 

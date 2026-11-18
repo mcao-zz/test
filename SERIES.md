@@ -22,12 +22,13 @@ smoke, `veth-mq-s2` only after s2 is the thing under test.
 | Tree | LPAR | QEMU |
 |------|------|------|
 | `ibmveth-net-fixes` | T13 lifecycle + N1 TX shrink under load; N2 needs a reset | stock QEMU: N1 in `init-s1.c` (N2 skip: hard to queue a reset) |
-| `veth-mq-s1` | `./lpar-tests/run_s1_all.sh` = `run_legacy_all` minus debugfs (`SKIP_STATS=1`). **Do not** run T3 / `run_mq_all` / `-L rx 4` | stock QEMU (`notes/numa/tools/qemu`): `./run.sh up <wt-s1>; ./run.sh build s1; ./run.sh boot n4 s1`. Do not use NUMA `init.c` as pass/fail |
+| `veth-mq-s1` | `./lpar-tests/run_s1_all.sh` = `run_legacy_all` minus debugfs/qstats (`SKIP_STATS=1 SKIP_T11=1 SKIP_T24=1`). Geometry is ethtool -l + /proc/interrupts, not leftover `rxN_interrupts`. **Do not** run T3 / `run_mq_all` / `-L rx 4` | stock QEMU (`notes/numa/tools/qemu`): `./run.sh up <wt-s1>; ./run.sh build s1; ./run.sh boot n4 s1`. Do not use NUMA `init.c` as pass/fail |
 | `veth-mq-s2` | `run_mq_all.sh` when LPAR is back | own QEMU `QEMU=own QEMU_ARGS=,queues=8` (not stock) |
 
-s1 has no `buffer_pools` debugfs and no RSS hfunc. Skip t12. t21 must
-stay unsupported. Cover letters must not claim "Tested on Power11" from
-QEMU.
+s1 has no `buffer_pools` debugfs, no qstats, and no RSS hfunc. Skip
+t12/t11/t24. t13 still runs; debugfs asserts skip when the file is
+absent. t21 must stay unsupported. Cover letters must not claim
+"Tested on Power11" from QEMU.
 
 ## History of plan revisions
 

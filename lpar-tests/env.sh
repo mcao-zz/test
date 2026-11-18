@@ -451,10 +451,14 @@ count_debugfs_queue_rows() {
 
 # When UP: live pools must have Count>0 and Active=1; at least one Active pool.
 # Catches free_buffer_pool() clearing size/active (ifdown/up RX death).
+# s1/s2 have no buffer_pools debugfs — skip, same as qemu-run-mq-quiet.
 assert_buffer_pools_up() {
 	local label=${1:-up}
 	local bp active_n bad
-	bp=$(iface_buffer_pools) || die "$label: missing debugfs buffer_pools"
+	bp=$(iface_buffer_pools) || {
+		ok "$label: skip buffer_pools (no debugfs; s1/s2)"
+		return 0
+	}
 	if grep -q '^# down:' "$bp" 2>/dev/null; then
 		die "$label: buffer_pools still shows # down: (iface not opened?)"
 	fi
@@ -487,10 +491,14 @@ assert_buffer_pools_up() {
 }
 
 # When DOWN: Count must remain (probe/sysfs geometry); Active/Available show 0.
+# s1/s2 have no buffer_pools debugfs — skip, same as qemu-run-mq-quiet.
 assert_buffer_pools_down() {
 	local label=${1:-down}
 	local bp bad
-	bp=$(iface_buffer_pools) || die "$label: missing debugfs buffer_pools"
+	bp=$(iface_buffer_pools) || {
+		ok "$label: skip buffer_pools (no debugfs; s1/s2)"
+		return 0
+	}
 	bad=$(awk '
 		/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+/ {
 			size = $3 + 0; bs = $4 + 0; active = $5 + 0

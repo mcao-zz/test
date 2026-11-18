@@ -28,6 +28,10 @@ Which suite?
   run_legacy_all.sh   True non-MQ PHYP (max_rx == 1), e.g. net0 + public peer.
                       T13 + SQ-safe quiet. Dies if max_rx != 1.
 
+  run_s1_all.sh       Wrapper for series 1 on that same legacy iface.
+                      Same as run_legacy_all plus SKIP_STATS/T11/T24
+                      (no debugfs, no qstats). Matches the QEMU s1 ABI.
+
 
 Typical runs (after lab.conf + peer iperf -t 0)
 -----------------------------------------------
@@ -36,6 +40,7 @@ Typical runs (after lab.conf + peer iperf -t 0)
   sudo EXTERNAL_IPERF=1 ./run_rx_1_all.sh
   # edit lab.conf to legacy profile (net0 / 10.48.36.x), then:
   sudo EXTERNAL_IPERF=1 ./run_legacy_all.sh
+  sudo EXTERNAL_IPERF=1 ./run_s1_all.sh     # s1: skip debugfs + qstats
 
 EXTERNAL_IPERF=1  — lab owns iperf; harness does not start/stop/restart it.
                     Use IPERF_TIME=0 (forever) on peer for long suites.

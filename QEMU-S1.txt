@@ -11,7 +11,8 @@ Host:  notes/numa/tools/qemu/run.sh
   ./run.sh build iperf         # init-s1.c + iperf3
   ./run.sh boot n4 iperf       # stock qemu: t13 + iperf + close-load
 
-Maps to lpar-tests/run_s1_all.sh / t13-legacy:
+Maps to lpar-tests/run_s1_all.sh / t13-legacy
+(LPAR skips t11/t12/t24 — no debugfs, no qstats):
 
   S8  ethtool -l rx 1 / max_rx 1
   S6  -L rx 2 rejected (EINVAL or EOPNOTSUPP)
