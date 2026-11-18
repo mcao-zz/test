@@ -6,7 +6,7 @@
 # Checks:
 #   1. Column header matches v8 format exactly
 #   2. Per-queue: debugfs queue rows = RX count, pool rows = RX×5
-#   3. rx*_interrupts ethtool -S rows match RX count
+#   3. /proc/interrupts lines match RX count (s2: no leftover -S keys)
 #   4. While down: "# down:" comment lines present
 #   5. Geometry (Count/BuffSize) preserved while down
 #
@@ -55,20 +55,20 @@ for n in $RX_LIST; do
 	assert_rx_geometry "$n"
 
 	got_l=$(current_rx)
-	rows_s=$(count_rx_stat_rows)
+	irqs=$(count_iface_irqs)
 	rows_d=$(count_debugfs_queue_rows "$bp")
 	# v8: IBMVETH_NUM_BUFF_POOLS=5 pools per queue → total data rows = n×5
 	pool_lines=$(awk '/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+/ { c++ } END { print c+0 }' "$bp")
 	expect_pools=$((n * 5))
-	log "ethtool -l RX=$got_l  rx*_interrupts rows=$rows_s  debugfs queues=$rows_d  pool_rows=$pool_lines (want $expect_pools)"
+	log "ethtool -l RX=$got_l  irqs=$irqs  debugfs queues=$rows_d  pool_rows=$pool_lines (want $expect_pools)"
 	[[ "$got_l" == "$n" ]] || die "ethtool -l RX=$got_l want $n"
-	[[ "$rows_s" == "$n" ]] || die "rx*_interrupts rows=$rows_s want $n"
+	[[ "$irqs" == "$n" ]] || die "/proc/interrupts lines=$irqs want $n"
 	[[ "$rows_d" == "$n" ]] || die "debugfs buffer_pools queue rows=$rows_d want $n"
 	[[ "$pool_lines" == "$expect_pools" ]] || \
 		die "debugfs pool data rows=$pool_lines want $expect_pools (${n}×5)"
 	assert_buffer_pools_up "T11-rx$n"
 	cp "$bp" "$LOGDIR/t11-buffer_pools-rx${n}.txt"
-	ok "RX=$n: -l / -S / debugfs queue rows and pool rows (${n}×5) match"
+	ok "RX=$n: -l / irqs / debugfs queue rows and pool rows (${n}×5) match"
 done
 
 saved_ip=$(save_iface_ipv4)

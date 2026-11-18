@@ -415,13 +415,10 @@ set_queue_count() {
         local new_count=$(get_queue_count)
         log "  Validation 1 - ethtool -l: $new_count queues"
 
-        # Validation 2: Count per-queue statistics
-        local stats_count=$(ethtool -S "$INTERFACE" | grep -E "^ *rx[0-9]+_interrupts:" | wc -l)
-        log "  Validation 2 - Per-queue stats: $stats_count rx queues"
-
-        # Validation 3: Count active interrupts
-        local irq_count=$(grep "$INTERFACE" /proc/interrupts | wc -l)
-        log "  Validation 3 - Active IRQs: $irq_count"
+        # Validation 2: live IRQ lines (s2 has no leftover -S rxN_interrupts)
+        local irq_count=$(grep -cE " ${INTERFACE}$|ibmveth-.*-rx" /proc/interrupts 2>/dev/null || true)
+        irq_count=${irq_count:-0}
+        log "  Validation 2 - Active IRQs: $irq_count"
 
         # Validation 4: sysfs queue count
         if [ -d "/sys/class/net/$INTERFACE/queues" ]; then
@@ -432,11 +429,11 @@ set_queue_count() {
         # Primary validation: ethtool -l must match
         if [ "$new_count" = "$count" ]; then
             log "  ${GREEN}✓${NC} Queue count successfully set to $count"
-            log "  ${GREEN}✓${NC} All validations: ethtool=$new_count, stats=$stats_count, irqs=$irq_count"
+            log "  ${GREEN}✓${NC} All validations: ethtool=$new_count, irqs=$irq_count"
             return 0
         else
             log "  ${RED}✗${NC} Queue count is $new_count, expected $count"
-            log "  ${YELLOW}⚠${NC} Stats show $stats_count queues, IRQs show $irq_count"
+            log "  ${YELLOW}⚠${NC} IRQs show $irq_count"
             return 1
         fi
     else
@@ -617,9 +614,9 @@ ethtool -S "$INTERFACE" > "$STATS_BEFORE"
 log "✓ Initial statistics captured ($(wc -l < "$STATS_BEFORE") lines)"
 log ""
 
-# Display initial queue stats (v8: per-queue key is rx*_interrupts; packets are in sysfs)
-log "Initial Per-Queue Statistics:"
-grep -E "^rx[0-9]+_interrupts:" "$STATS_BEFORE" | head -10 | tee -a "$LOG_FILE"
+# Display initial queue IRQs (s2: leftover -S rxN_interrupts gone)
+log "Initial RX IRQs:"
+grep -E " ${INTERFACE}$|ibmveth-.*-rx" /proc/interrupts | tee -a "$LOG_FILE"
 log ""
 
 # Initialize dmesg marker and capture baseline
@@ -713,19 +710,28 @@ capture_interrupts "After traffic"
 log "=== 10. Statistics After Traffic ==="
 ethtool -S "$INTERFACE" > "$STATS_AFTER_TRAFFIC"
 
-# Show both TX and RX distribution (v8: per-queue ethtool keys are *_send_failures / *_interrupts;
-# packets/bytes live in netdev_stat_ops / sysfs, not ethtool -S)
-log "Per-Queue TX send_failures:"
-grep -E "^ *tx[0-9]+_send_failures:" "$STATS_AFTER_TRAFFIC" | tee -a "$LOG_FILE"
-log ""
-log "Per-Queue RX interrupts:"
-grep -E "^ *rx[0-9]+_interrupts:" "$STATS_AFTER_TRAFFIC" | tee -a "$LOG_FILE"
+# Per-queue packets/bytes are qstats; leftover -S rxN_interrupts are gone.
+# Live IRQ lines are the per-queue activity signal.
+log "Live RX IRQs:"
+grep -E " ${INTERFACE}$|ibmveth-.*-rx" /proc/interrupts | tee -a "$LOG_FILE"
 log ""
 
-# Validate RX queue activity: use interrupt counts as proxy for queue activity
-ACTIVE_RX_QUEUES=$(grep -E "^ *rx[0-9]+_interrupts:" "$STATS_AFTER_TRAFFIC" | awk '$2 > 0 {count++} END {print count}')
+# Validate RX queue activity from /proc/interrupts (non-zero CPU sums)
+ACTIVE_RX_QUEUES=$(awk -v iface="$INTERFACE" '
+	$1 ~ /^[0-9]+:/ {
+		name = $NF
+		sum = 0
+		for (i = 2; i < NF; i++) {
+			if ($i ~ /^[0-9]+$/) sum += $i + 0
+			else break
+		}
+		if (sum > 0 && (name == iface || name ~ /ibmveth-.*-rx[0-9]+$/))
+			n++
+	}
+	END { print n+0 }
+' /proc/interrupts)
 ACTIVE_RX_QUEUES=${ACTIVE_RX_QUEUES:-0}
-log "Active RX queues (by interrupts): $ACTIVE_RX_QUEUES"
+log "Active RX queues (by IRQs): $ACTIVE_RX_QUEUES"
 
 # If we used inbound traffic (sshpass available), expect multi-queue distribution
 if command -v sshpass >/dev/null 2>&1 && [ -n "$LOCAL_IP" ]; then
@@ -916,25 +922,23 @@ log ""
 # Capture final statistics
 log "=== 16. Final Statistics ==="
 ethtool -S "$INTERFACE" > "$STATS_FINAL"
-log "Final Per-Queue Statistics:"
-grep -E "^[[:space:]]*rx[0-9]+_interrupts:" "$STATS_FINAL" | tee -a "$LOG_FILE"
+log "Final adapter ethtool -S (no leftover rxN_interrupts on s2):"
+grep -E "replenish_add_buff_success|rx_no_buffer|tx_send_failed" "$STATS_FINAL" | tee -a "$LOG_FILE"
 log ""
 
-# Test 13: v6 ethtool extras still present (hcall_* dropped)
+# Test 13: adapter ethtool extras still present (hcall_* / leftover rxN dropped)
 log "=== 17. Adapter stats validation ==="
 REP_OK=$(get_stat_value "$STATS_FINAL" "replenish_add_buff_success")
-RX_IRQ0=$(get_stat_value "$STATS_FINAL" "rx0_interrupts")
 
 log "Adapter extras:"
 log "  replenish_add_buff_success: $REP_OK"
-log "  rx0_interrupts: $RX_IRQ0"
 
 if [ "$REP_OK" -gt 0 ] 2>/dev/null; then
     score_pass "Buffers posted (replenish_add_buff_success=$REP_OK)"
-elif grep -qE '^[[:space:]]*rx0_interrupts:' "$STATS_FINAL"; then
-    score_pass "v6 per-queue extras present (rx0_interrupts=$RX_IRQ0)"
+elif grep -qE '^[[:space:]]*replenish_add_buff_success:' "$STATS_FINAL"; then
+    score_pass "adapter ethtool -S keys present"
 else
-    score_fail "Missing v6 ethtool extras (replenish_add_buff_success / rx0_interrupts)"
+    score_fail "Missing adapter ethtool extras (replenish_add_buff_success)"
 fi
 log ""
 

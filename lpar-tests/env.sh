@@ -231,14 +231,24 @@ max_rx() {
 	echo "$m"
 }
 
-# Live RX/TX geometry on ethtool -S. v6 dropped rxN_packets / txN_packets
-# (and hcall_*); one interrupts / send_failures key remains per live queue.
+# VIO unit address hex (IRQ names and debugfs). Empty if the netdev is gone.
+iface_vio_id() {
+	local p
+	p=$(readlink -f "/sys/class/net/${IFACE}/device" 2>/dev/null || true)
+	[[ -n "$p" ]] || return 0
+	basename "$p"
+}
+
+# Live RX geometry. s2 has no per-queue ethtool -S keys (those went to
+# netdev_stat_ops / qstats). Callers comparing this to N want the live
+# ethtool -l RX count, not leftover v8 rxN_interrupts rows.
 count_rx_stat_rows() {
 	local n
-	n=$(ethtool -S "$IFACE" 2>/dev/null | grep -cE '^[[:space:]]*rx[0-9]+_interrupts:') || true
+	n=$(current_rx)
 	echo "${n:-0}"
 }
 
+# Leftover v8 per-TX -S keys. s2 has none; assert_tx_geometry treats 0 as OK.
 count_tx_stat_rows() {
 	local n
 	n=$(ethtool -S "$IFACE" 2>/dev/null | grep -cE '^[[:space:]]*tx[0-9]+_send_failures:') || true
@@ -246,21 +256,15 @@ count_tx_stat_rows() {
 }
 
 count_iface_irqs() {
-	# v8 IRQ naming: queue 0 uses netdev->name (e.g. "env9"); subordinate
-	# queues use "ibmveth-<unit_address_hex>-rxN" (e.g. "ibmveth-30000009-rx1").
-	# Must count both patterns to get the true queue count.
+	# Queue 0 uses netdev->name (e.g. "env9" / "eth0"); subordinate
+	# queues use "ibmveth-<unit_address_hex>-rxN".
 	local n vio sub
-	# queue 0: netdev name (exact suffix match avoids partial hits)
 	n=$(grep -c " ${IFACE}$" /proc/interrupts 2>/dev/null) || true
 	n=${n:-0}
-	# subordinate queues (v8): "ibmveth-<vio_unit_addr_hex>-rxN"
-	# Derive vio device name (= unit address hex) from sysfs device symlink.
-	if [[ -e "/sys/class/net/${IFACE}/device" ]]; then
-		vio=$(basename "$(readlink -f "/sys/class/net/${IFACE}/device")" 2>/dev/null || true)
-		if [[ -n "$vio" ]]; then
-			sub=$(grep -c "ibmveth-${vio}-rx" /proc/interrupts 2>/dev/null) || true
-			n=$((n + ${sub:-0}))
-		fi
+	vio=$(iface_vio_id)
+	if [[ -n "$vio" ]]; then
+		sub=$(grep -c "ibmveth-${vio}-rx" /proc/interrupts 2>/dev/null) || true
+		n=$((n + ${sub:-0}))
 	fi
 	echo "$n"
 }
@@ -347,17 +351,16 @@ explain_rss_rxfh() {
 	log "    uses murmur|additive — ignore toeplitz/crc32/xor"
 }
 
-# Fail unless published RX / -S rows / IRQ lines all match N
+# Fail unless published RX and live IRQ lines both match N.
+# Per-queue packets/bytes/drops are qstats, not ethtool -S.
 assert_rx_geometry() {
 	local n=$1
-	local got stats irqs
+	local got irqs
 	got=$(current_rx)
-	stats=$(count_rx_stat_rows)
 	irqs=$(count_iface_irqs)
 	[[ "$got" == "$n" ]] || die "ethtool -l RX=$got want $n"
-	[[ "$stats" == "$n" ]] || die "ethtool -S rx*_interrupts rows=$stats want $n"
 	[[ "$irqs" == "$n" ]] || die "/proc/interrupts $IFACE lines=$irqs want $n"
-	ok "geometry RX=$n (ethtool -l / -S / irqs)"
+	ok "geometry RX=$n (ethtool -l / irqs)"
 }
 
 # Assert ethtool -l TX matches N; optionally tx*_send_failures row count.
@@ -667,8 +670,18 @@ dmesg_delta() {
 }
 
 check_no_lockup() {
-	if dmesg | tail -200 | grep -Eiq 'soft lockup|hard LOCKUP|hung_task|Blocking RCU'; then
-		dmesg_delta "$LOGDIR/dmesg-LOCKUP.txt"
+	local f="$LOGDIR/dmesg-LOCKUP.txt"
+	# New lines since the last mark only. dmesg | tail -200 also
+	# matches leftover kmemleak RCU stalls from an earlier run.
+	dmesg_delta "$f"
+	if grep -Eiq 'soft lockup|hard LOCKUP|hung_task' "$f"; then
+		die "lockup / hung task seen in dmesg"
+	fi
+	if grep -Eiq 'detected stalls|detected expedited stalls|blocking rcu_node' "$f"; then
+		if grep -Eiq 'task:kmemleak' "$f" && ! grep -Eiq 'ibmveth|ethtool' "$f"; then
+			log "NOTE: RCU stall is kmemleak-only — not a driver lockup"
+			return 0
+		fi
 		die "lockup / hung task seen in dmesg"
 	fi
 }
@@ -1098,28 +1111,41 @@ health_unload_probe() {
 # Override: MIN_RX_DELTA=5000 RX_SAMPLE_SECS=5 MIN_ACTIVE_RX_QUEUES=2
 : "${RX_SAMPLE_SECS:=5}"
 : "${MIN_RX_DELTA:=10000}"          # sysfs rx_packets increase over sample
-: "${MIN_ACTIVE_RX_QUEUES:=2}"      # distinct queues with interrupt/poll Δ>0
+: "${MIN_ACTIVE_RX_QUEUES:=2}"      # distinct queues with /proc/interrupts Δ>0
 : "${MQ_PROOF_RX:=8}"               # RX queue count used for MQ spread proof
 
 count_rx_queue_rows() {
 	count_rx_stat_rows
 }
 
-# Print "qid interrupts polls" for each live RX queue (v6 ethtool -S).
+# Print "qid irq_count 0" for each live RX IRQ. s2 dropped leftover
+# ethtool -S rxN_interrupts / rxN_polls; /proc/interrupts is the
+# per-queue activity signal that needs no ynl. Third column stays 0
+# so prove_* still parses the old three-field rows.
 snapshot_rx_queue_activity() {
-	ethtool -S "$IFACE" 2>/dev/null | awk '
-		/^[[:space:]]*rx([0-9]+)_interrupts:/ {
-			if (match($1, /[0-9]+/)) {
-				q = substr($1, RSTART, RLENGTH) + 0
-				irq[q] = $2 + 0
-				if (q > maxq) maxq = q
-				seen[q] = 1
+	local vio
+	vio=$(iface_vio_id)
+	awk -v iface="$IFACE" -v vio="$vio" '
+		BEGIN { maxq = -1 }
+		$1 ~ /^[0-9]+:/ {
+			name = $NF
+			sum = 0
+			for (i = 2; i < NF; i++) {
+				if ($i ~ /^[0-9]+$/)
+					sum += $i + 0
+				else
+					break
 			}
-		}
-		/^[[:space:]]*rx([0-9]+)_polls:/ {
-			if (match($1, /[0-9]+/)) {
-				q = substr($1, RSTART, RLENGTH) + 0
-				pol[q] = $2 + 0
+			q = -1
+			if (name == iface)
+				q = 0
+			else if (vio != "" && name ~ ("^ibmveth-" vio "-rx[0-9]+$")) {
+				q = name
+				sub("^ibmveth-" vio "-rx", "", q)
+				q = q + 0
+			}
+			if (q >= 0) {
+				irq[q] = sum
 				if (q > maxq) maxq = q
 				seen[q] = 1
 			}
@@ -1127,9 +1153,9 @@ snapshot_rx_queue_activity() {
 		END {
 			for (i = 0; i <= maxq; i++)
 				if (i in seen)
-					print i, irq[i]+0, pol[i]+0
+					print i, irq[i]+0, 0
 		}
-	'
+	' /proc/interrupts
 }
 
 # Compat name: older scripts asked for rxN_packets; v6 has no such keys.
@@ -1258,8 +1284,8 @@ diagnose_inbound_fail() {
 	link_rx=$(ip -s link show "$IFACE" 2>/dev/null | awk '/RX:/{getline; print $2; exit}')
 	log "ip -s link $IFACE RX packets field≈${link_rx:-?}"
 	log "iperf3 listeners: $(ss -ltnp 2>/dev/null | grep -c iperf3 || echo 0)"
-	ethtool -S "$IFACE" 2>/dev/null | grep -E '^[[:space:]]*rx[0-9]+_(interrupts|polls):' | head -16 | \
-		while read -r line; do log "  $line"; done
+	grep -E " ${IFACE}$|ibmveth-.*-rx" /proc/interrupts 2>/dev/null | \
+		while read -r line; do log "  irq $line"; done
 
 	if [[ "${EXTERNAL_IPERF:-0}" = 1 ]]; then
 		cat >/dev/tty <<EOF
@@ -1287,8 +1313,8 @@ Low/zero RX Δ on $IFACE. Do this on peer BEFORE typing R:
   for p in $IPERF_PORTS; do iperf3 -c \$DUT_IP -t 3600 -P 4 -p \$p & done
 
 On DUT, watch all queues:
-  watch -n2 'ethtool -S $IFACE | awk "/rx[0-9]+_interrupts/{printf \"  %-30s %s\\n\",\$1,\$2}"'
-Only type R when counters are climbing across multiple queues.
+  watch -n2 'grep -E " ${IFACE}$|ibmveth-.*-rx" /proc/interrupts'
+Only type R when IRQ counts are climbing across multiple queues.
 ----------------------------------------------------------------------
 EOF
 }
@@ -1306,7 +1332,7 @@ inbound_rx_flowing() {
 
 # Hard proof: bulk inbound RX (rejects ping/ARP-sized Δ).
 # Returns 0 on success. Packet total is ndo_get_stats64 (sysfs); per-queue
-# activity is rxN_interrupts / rxN_polls (v6 has no ethtool rxN_packets).
+# activity is /proc/interrupts (s2 has no ethtool rxN_interrupts).
 prove_bulk_inbound_rx() {
 	local label=${1:-bulk-rx}
 	local wait=${2:-$RX_SAMPLE_SECS}
@@ -1360,7 +1386,7 @@ prove_mq_rx_under_load() {
 		ethtool_rx "$want_rx" || die "$label: ethtool -L rx $want_rx failed"
 		sleep 1
 		nq=$(count_rx_queue_rows)
-		[[ "$nq" -eq "$want_rx" ]] || die "$label: expected $want_rx rx*_interrupts rows, got $nq"
+		[[ "$nq" -eq "$want_rx" ]] || die "$label: expected $want_rx RX queues (ethtool -l), got $nq"
 	fi
 
 	before_file=$(mktemp)
@@ -1456,7 +1482,7 @@ On PEER ($PEER):
   iperf3 -c \$DUT_IP -t 3600 -P 4 -p 5201 &
 
 On DUT, wait until counters move, then type yes:
-  watch -n2 'ethtool -S $IFACE | awk "/rx[0-9]+_interrupts/{printf \"  %-30s %s\\n\",\$1,\$2}"'
+  watch -n2 'grep -E " ${IFACE}$|ibmveth-.*-rx" /proc/interrupts'
 
 Need Δ>=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s (queues>=$MIN_ACTIVE_RX_QUEUES).
 DUT listening as $dut_ip on: $IPERF_PORTS
@@ -1483,7 +1509,7 @@ On PEER ($PEER), run NOW (old clients died during quiet reload/ifdown):
   done
 
 On DUT, confirm all queues climbing:
-  watch -n2 'ethtool -S $IFACE | awk "/rx[0-9]+_interrupts/{printf \"  %-30s %s\\n\",\$1,\$2}"'
+  watch -n2 'grep -E " ${IFACE}$|ibmveth-.*-rx" /proc/interrupts'
 
 Then type yes. Need Δ>=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s and
 >=$MIN_ACTIVE_RX_QUEUES queues at RX=$MQ_PROOF_RX.

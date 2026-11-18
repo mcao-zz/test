@@ -323,18 +323,21 @@ check_queue_stats() {
         return 0
     fi
 
-    # Check for per-queue RX extras (rx0_interrupts, … — v6 has no rxN_packets)
-    local rx_stats=$(ethtool -S "$DEVICE" 2>/dev/null | grep -E "rx[0-9]+_interrupts")
-    local tx_stats=$(ethtool -S "$DEVICE" 2>/dev/null | grep -E "tx[0-9]+_send_failures")
+    # s2: leftover -S rxN_interrupts are gone. Geometry is ethtool -l + IRQs.
+    local rx_l
+    rx_l=$(ethtool -l "$DEVICE" 2>/dev/null | awk '
+		/^Current hardware settings:/ { cur=1; next }
+		cur && /^[[:space:]]*RX:/ { print $2; exit }
+	')
+    local irq_n
+    irq_n=$(grep -cE " ${DEVICE}$|ibmveth-.*-rx" /proc/interrupts 2>/dev/null || true)
+    irq_n=${irq_n:-0}
 
-    if [ -z "$rx_stats" ] && [ -z "$tx_stats" ]; then
-        print_warn "No per-queue statistics available"
+    if [ -z "$rx_l" ]; then
+        print_warn "ethtool -l RX not parseable"
         return 0
     fi
-
-    local rx_count=$(echo "$rx_stats" | wc -l | tr -d ' ')
-    local tx_count=$(echo "$tx_stats" | wc -l | tr -d ' ')
-    print_pass "Per-queue statistics available (RX: $rx_count queues, TX: $tx_count queues)"
+    print_pass "RX geometry ethtool -l=$rx_l irqs=$irq_n"
 
     if [ $VERBOSE -eq 1 ]; then
         echo

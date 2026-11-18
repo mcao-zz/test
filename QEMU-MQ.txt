@@ -1,0 +1,19 @@
+QEMU stand-in for series 2 quiet geometry (not LPAR)
+
+Own QEMU pseries spapr-vlan queues=16 + persistent Debian rootfs.
+Does not replace run_mq_all on LPAR. Does not claim Tested on Power11.
+
+  cd notes/numa/tools/qemu
+  ./run.sh up /Users/nanyu/linux/wt-s2
+  ./run.sh qemu-build
+  ./run.sh build
+  ./run.sh boot n4 mq          # implies QEMU=own QEMU_ARGS=,queues=16
+
+Guest runs qemu-run-mq-quiet.sh (T8, T17, T19, T16, close-sq, L-cycle).
+Skipped: module reload (T20/T23/dyndbg), debugfs smoke/T11/T12, heavy/T14.
+
+s2 ethtool -S has adapter keys only (per-queue went to netdev_stat_ops).
+lpar-tests assert_rx_geometry uses ethtool -l + /proc/interrupts (2026-11-17).
+
+lab.conf for this path is qemu-lab.conf (IFACE=eth0 PEER=10.0.2.2).
+Do not overwrite lpar-tests/lab.conf.

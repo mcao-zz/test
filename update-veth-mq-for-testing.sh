@@ -8,12 +8,10 @@ KERNEL_TREE="${KERNEL_TREE:-/root/ming/net-next}"
 
 # Available branches
 BRANCHES=(
-    "veth-mq-v2.0-dev"
+    "veth-mq-s1"
+    "ibmveth-net-fixes"
+    "veth-mq-s2"
     "veth-mq-for-testing"
-    "veth-mq-phase3"
-    "veth-mq-phase3-h-function-handling"
-    "veth-mq-phase2"
-    "veth-mq-phase2-per-queue-pools"
 )
 
 # Parse command line arguments

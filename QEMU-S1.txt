@@ -1,0 +1,26 @@
+QEMU stand-in for series 1 (LPAR down)
+
+Stock QEMU pseries spapr-vlan has one RX queue. That matches s1/legacy.
+Do not use the NUMA init.c (XPS/RFS/debugfs numa) as s1 pass/fail.
+Do not put "Tested on Power11" in a cover from this run.
+
+Guest: notes/numa/tools/qemu/init-s1.c (nolibc)
+Host:  notes/numa/tools/qemu/run.sh
+
+  ./run.sh up /Users/nanyu/linux/wt-s1
+  ./run.sh build iperf         # init-s1.c + iperf3
+  ./run.sh boot n4 iperf       # stock qemu: t13 + iperf + close-load
+
+Maps to lpar-tests/run_s1_all.sh / t13-legacy:
+
+  S8  ethtool -l rx 1 / max_rx 1
+  S6  -L rx 2 rejected (EINVAL or EOPNOTSUPP)
+  S1  ifdown/up + UDP echo 10.0.2.2:7777
+  S3  MTU 9000 then restore 1500 (jumbo may fail on QEMU)
+  N1  -L tx 1 under UDP, restore
+  S9  host greps the console for Oops/BUG/panic
+  iperf  TCP 5s guest->host then host->guest (MODE=iperf). TCG/slirp
+        Mbps is not an LPAR number; cover must not quote it.
+
+s2: own QEMU  QEMU=own QEMU_ARGS=,queues=8  (see MQ-EMULATION.txt).
+N2 (reset-while-down) is LPAR-only.

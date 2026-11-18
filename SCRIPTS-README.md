@@ -8,11 +8,12 @@ This file only documents the older kernel/module update helpers.
 | Field | Value |
 |-------|-------|
 | Kernel remote | `git@github.com:mcao-zz/linux.git` |
-| Review branch | `veth-mq-upstream-netnext-v4-review` |
-| Tip (2026-07-30) | `7e14b04f6649` (P15 RSS + get_rx_ring_count) |
+| Review branch | `veth-mq-s1` (see SERIES.md for net / s2) |
+| Tip (2026-11-17) | `bc82f0c24742` |
 
-Do **not** use the phase2/phase3/`veth-mq-for-testing` branch list below
-for v4 net-next validation unless you intentionally need an old tree.
+Lab branch menu is `veth-mq-s1` / `ibmveth-net-fixes` / `veth-mq-s2`
+(see SERIES.md). `veth-mq-for-testing` is a lab alias — point it at
+the tree under test.
 
 ## Overview
 

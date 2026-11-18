@@ -127,7 +127,7 @@ done
 Many TCP flows help PHYP RX hashing. Watch on DUT:
 
 ```bash
-watch -n1 'ethtool -S env9 | grep -E "rx[0-9]+_interrupts"'
+watch -n1 'grep -E " env9$|ibmveth-.*-rx" /proc/interrupts'
 ```
 
 ### 4. Run suites (lab owns iperf)
@@ -257,11 +257,16 @@ counts. Prefer console or an alternate management path.
 
 ## Kernel under test
 
-| Field | Value |
-|-------|-------|
-| Kernel remote | `git@github.com:mcao-zz/linux.git` |
-| Branch | `veth-mq-upstream-netnext-v4-review` |
-| Tip (as of 2026-07-27) | `a8dfd6177669` |
+See **[SERIES.md](SERIES.md)** (split 2026-11-17). Lab fetch:
+
+```bash
+./update-veth-mq-git-simple.sh veth-mq-s1          # SQ prep
+./update-veth-mq-git-simple.sh ibmveth-net-fixes   # net 0/2
+./update-veth-mq-git-simple.sh veth-mq-s2          # MQ enable (later)
+```
+
+LPAR s1: `sudo ./lpar-tests/run_s1_all.sh` (legacy suite, skip debugfs).
+Do not run T3 / `run_mq_all` on s1. QEMU stand-in: [QEMU-S1.txt](QEMU-S1.txt).
 
 ## Validation plan
 

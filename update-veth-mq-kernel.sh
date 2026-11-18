@@ -5,10 +5,9 @@ set -e
 
 # Available branches
 BRANCHES=(
-    "veth-mq-phase2"
-    "veth-mq-phase2-per-queue-pools"
-    "veth-mq-phase3"
-    "veth-mq-phase3-h-function-handling"
+    "veth-mq-s1"
+    "ibmveth-net-fixes"
+    "veth-mq-s2"
     "veth-mq-for-testing"
 )
 
@@ -90,10 +89,9 @@ echo "  sudo reboot"
 echo ""
 echo "Usage examples:"
 echo "  $0                                    # Interactive menu"
-echo "  $0 veth-mq-phase2                    # Direct to phase2"
-echo "  $0 veth-mq-phase2-per-queue-pools   # Direct to per-queue pools"
-echo "  $0 veth-mq-phase3                    # Direct to phase3"
-echo "  $0 veth-mq-phase3-h-function-handling # Direct to h-function handling"
-echo "  $0 veth-mq-for-testing               # Direct to for-testing (clean logs)"
+echo "  $0 veth-mq-s1                        # series 1 SQ prep"
+echo "  $0 ibmveth-net-fixes                 # net 0/2"
+echo "  $0 veth-mq-s2                        # series 2 MQ enable"
+echo "  $0 veth-mq-for-testing               # lab alias (retarget to s1/s2)"
 
 # Made with Bob

@@ -10,12 +10,12 @@
 # that stay on the classic !multi_queue open/poll/hcall path after the
 # MQ series refactors (P05/P06/P09/…).
 #
-# v8-specific checks (see gap analysis):
+# Adapter-key checks:
 #   L1. replenish_no_mem present in ethtool -S
-#   L2. rx0_polls advances under traffic (SQ NAPI single-poll path)
+#   L2. queue-0 IRQ advances under traffic (SQ path; no leftover rx0_polls)
 #   L3. sysfs rx_missed_errors readable (ndo_get_stats64 hw_drop_overruns)
 #   L4. no-op ethtool -L rx 1 succeeds (no-op fires before mq_fallback gate)
-#   L7. tx0_send_failures row present (tx%d_send_failures, one TX queue)
+#   L7. adapter tx_send_failed present (leftover txN_send_failures is v8-only)
 #
 #   sudo IFACE=env7 PEER=192.168.100.2 ./t13-legacy.sh
 #
@@ -118,13 +118,11 @@ d=$((ip_b - ip_a))
 [[ "$d" -ge 10 ]] || die "RX counters did not advance (Δ=$d)"
 ok "RX counters advance under ping (Δ=$d)"
 
-rows=$(count_rx_stat_rows)
-[[ "$rows" -eq 1 ]] || die "rx*_interrupts rows=$rows want 1"
-ok "ethtool -S rx*_interrupts rows=1"
+assert_rx_geometry 1
 ethtool -S "$IFACE" >"$LOGDIR/t13-stats.txt" || die "ethtool -S failed"
 
-# ── v8 ethtool -S key smoke on legacy ────────────────────────────────────
-log "--- v8 ethtool -S key checks ---"
+# ── adapter ethtool -S key smoke on legacy ───────────────────────────────
+log "--- ethtool -S key checks ---"
 
 # L1: replenish_no_mem must be present (adapter-level, always in ibmveth_stats[])
 v=$(stat_val replenish_no_mem)
@@ -145,22 +143,32 @@ else
 	ok "L1: rx%d_packets correctly absent from ethtool -S"
 fi
 
-# L7: tx0_send_failures must be present (one TX queue on legacy)
+# L7: adapter tx_send_failed is the summed key; leftover txN_send_failures
+# is v8-only and absent on s2.
+v=$(stat_val tx_send_failed)
+[[ -n "$v" ]] || die "L7: missing ethtool -S counter: tx_send_failed"
+ok "L7: tx_send_failed=$v present in ethtool -S"
 tx_rows=$(count_tx_stat_rows)
-[[ "$tx_rows" -ge 1 ]] || die "L7: tx*_send_failures rows=$tx_rows want >=1"
-ok "L7: tx*_send_failures rows=$tx_rows (tx0_send_failures present)"
+if [[ "${tx_rows:-0}" -ge 1 ]]; then
+	ok "L7: leftover tx*_send_failures rows=$tx_rows (v8 tree)"
+else
+	ok "L7: no leftover tx*_send_failures (s2: adapter key only)"
+fi
 
-# L2: rx0_polls must advance under traffic (SQ NAPI single-poll path)
-log "--- L2: rx0_polls advance under traffic ---"
-polls_before=$(stat_val rx0_polls); polls_before=${polls_before:-0}
+# L2: queue-0 IRQ count must advance under traffic (SQ path).
+# s2 has no rx0_polls on ethtool -S.
+log "--- L2: queue-0 IRQ advance under traffic ---"
+irq_before=$(snapshot_rx_queue_activity | awk '$1 == 0 { print $2; exit }')
+irq_before=${irq_before:-0}
 ping -I "$IFACE" -c 30 -W 1 "$PEER" >/dev/null 2>&1 || true
 sleep 1
-polls_after=$(stat_val rx0_polls); polls_after=${polls_after:-0}
-polls_delta=$((polls_after - polls_before))
-log "rx0_polls: $polls_before → $polls_after (Δ=$polls_delta)"
-[[ "$polls_delta" -ge 1 ]] || \
-	die "L2: rx0_polls did not advance under ping (Δ=$polls_delta) — SQ NAPI poll path broken"
-ok "L2: rx0_polls advanced under traffic (Δ=$polls_delta)"
+irq_after=$(snapshot_rx_queue_activity | awk '$1 == 0 { print $2; exit }')
+irq_after=${irq_after:-0}
+irq_delta=$((irq_after - irq_before))
+log "queue0 IRQ: $irq_before → $irq_after (Δ=$irq_delta)"
+[[ "$irq_delta" -ge 1 ]] || \
+	die "L2: queue-0 IRQ did not advance under ping (Δ=$irq_delta) — SQ path broken"
+ok "L2: queue-0 IRQ advanced under traffic (Δ=$irq_delta)"
 
 # L3: sysfs rx_missed_errors readable (ndo_get_stats64 hw_drop_overruns proxy)
 log "--- L3: sysfs rx_missed_errors ---"

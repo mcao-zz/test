@@ -9,8 +9,8 @@
 #
 # After each successful -L, validates:
 #   - ethtool -l RX count
-#   - ethtool -S rxN_interrupts rows (v6: no rxN_packets on -S)
-#   - /proc/interrupts lines for this iface
+#   - /proc/interrupts lines for this iface (s2: no leftover -S rxN keys)
+#   - sysfs queues/rx-* count (if present)
 #   - sysfs queues/rx-* count (if present)
 #   - iface still UP / LOWER_UP
 #   - dmesg delta: resize success; no Oops/BUG/WARNING/ibmveth WARN
@@ -23,7 +23,7 @@
 # Under load (UNDER_RX=1 — keep lp7→DUT iperf running):
 #   - bulk sysfs rx_packets Δ >= MIN_RX_DELTA over RX_SAMPLE_SECS
 #   - scale-down: surviving queues still receive; no error Δ spike
-#   - scale-up: at least one *new* queue (qid >= previous RX) sees interrupts/polls
+#   - scale-up: at least one *new* queue (qid >= previous RX) sees IRQ Δ
 #
 # Usage:
 #   sudo ./rx_queue_size.sh [iface] [delay_seconds]
@@ -115,7 +115,7 @@ get_rx_max() {
 }
 
 count_rx_stat_queues() {
-	ethtool -S "$IFACE" 2>/dev/null | grep -cE '^[[:space:]]*rx[0-9]+_interrupts:' || echo 0
+	get_rx_current
 }
 
 link_rx_packets() {
@@ -123,9 +123,17 @@ link_rx_packets() {
 }
 
 count_iface_irqs() {
-	grep -c "[[:space:]]${IFACE}$\|[[:space:]]${IFACE}-" /proc/interrupts 2>/dev/null \
-		|| grep -c "${IFACE}" /proc/interrupts 2>/dev/null \
-		|| echo 0
+	local n vio sub
+	n=$(grep -c " ${IFACE}$" /proc/interrupts 2>/dev/null) || true
+	n=${n:-0}
+	if [ -e "/sys/class/net/${IFACE}/device" ]; then
+		vio=$(basename "$(readlink -f "/sys/class/net/${IFACE}/device")" 2>/dev/null || true)
+		if [ -n "$vio" ]; then
+			sub=$(grep -c "ibmveth-${vio}-rx" /proc/interrupts 2>/dev/null) || true
+			n=$((n + ${sub:-0}))
+		fi
+	fi
+	echo "$n"
 }
 
 count_sysfs_rx() {
@@ -143,21 +151,33 @@ stat_val() {
 	'
 }
 
-# Print "qid interrupts polls" (v6 ethtool -S; no rxN_packets)
+# Print "qid irq_count 0" from /proc/interrupts (s2: no leftover -S keys)
 snapshot_rx_activity() {
-	ethtool -S "$IFACE" 2>/dev/null | awk '
-		/^[[:space:]]*rx([0-9]+)_interrupts:/ {
-			if (match($1, /[0-9]+/)) {
-				q = substr($1, RSTART, RLENGTH) + 0
-				irq[q] = $2 + 0
-				if (q > maxq) maxq = q
-				seen[q] = 1
+	local vio=""
+	if [ -e "/sys/class/net/${IFACE}/device" ]; then
+		vio=$(basename "$(readlink -f "/sys/class/net/${IFACE}/device")" 2>/dev/null || true)
+	fi
+	awk -v iface="$IFACE" -v vio="$vio" '
+		BEGIN { maxq = -1 }
+		$1 ~ /^[0-9]+:/ {
+			name = $NF
+			sum = 0
+			for (i = 2; i < NF; i++) {
+				if ($i ~ /^[0-9]+$/)
+					sum += $i + 0
+				else
+					break
 			}
-		}
-		/^[[:space:]]*rx([0-9]+)_polls:/ {
-			if (match($1, /[0-9]+/)) {
-				q = substr($1, RSTART, RLENGTH) + 0
-				pol[q] = $2 + 0
+			q = -1
+			if (name == iface)
+				q = 0
+			else if (vio != "" && name ~ ("^ibmveth-" vio "-rx[0-9]+$")) {
+				q = name
+				sub("^ibmveth-" vio "-rx", "", q)
+				q = q + 0
+			}
+			if (q >= 0) {
+				irq[q] = sum
 				if (q > maxq) maxq = q
 				seen[q] = 1
 			}
@@ -165,9 +185,9 @@ snapshot_rx_activity() {
 		END {
 			for (i = 0; i <= maxq; i++)
 				if (i in seen)
-					print i, irq[i]+0, pol[i]+0
+					print i, irq[i]+0, 0
 		}
-	'
+	' /proc/interrupts
 }
 
 snap_errors() {
@@ -353,9 +373,9 @@ validate_after_resize() {
 
 	stats_n=$(count_rx_stat_queues)
 	if [ "$stats_n" = "$expect" ]; then
-		ok "ethtool -S rx*_interrupts rows=$stats_n"
+		ok "ethtool -l RX rows=$stats_n"
 	else
-		bad "ethtool -S rx*_interrupts rows=$stats_n (want $expect)"
+		bad "ethtool -l RX rows=$stats_n (want $expect)"
 	fi
 
 	irq_n=$(count_iface_irqs)
@@ -388,8 +408,8 @@ validate_after_resize() {
 	ethtool -S "$IFACE" > "$stats_f" 2>/dev/null || true
 	check_error_deltas
 
-	echo -n "  rx*_interrupts (abs): "
-	awk '/^[[:space:]]*rx[0-9]+_interrupts:/ { printf "%s=%s ", $1, $2 }' "$stats_f"
+	echo -n "  RX IRQs (abs): "
+	grep -E " ${IFACE}$|ibmveth-.*-rx" /proc/interrupts 2>/dev/null | awk '{printf "%s=%s ", $NF, $2}'
 	echo ""
 
 	# --- under-load packet proof ---
