@@ -113,6 +113,9 @@ fi
 # RSS must be unsupported on non-MQ
 [[ "${SKIP_T21:-0}" = 1 ]] || run t21-rss "$DIR/t21-rss-hfunc.sh"
 
+# N1: TX shrink under traffic (RX unchanged)
+[[ "${SKIP_T26:-0}" = 1 ]] || run t26-tx-shrink "$DIR/t26-tx-shrink.sh"
+
 # Close under load at RX=1 (use lab flood if EXTERNAL_IPERF)
 [[ "${SKIP_CLOSE:-0}" = 1 ]] || \
 	run close-sq env RX=1 ROUNDS="$ROUNDS" IPERF=0 "$DIR/close-under-load.sh"

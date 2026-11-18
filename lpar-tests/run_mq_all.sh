@@ -203,6 +203,7 @@ if [[ "${SKIP_QUIET:-0}" != 1 ]]; then
 	[[ "${SKIP_STASH:-0}" = 1 ]] || run t8-stash "$DIR/t8-down-stash.sh"
 	[[ "${SKIP_T17:-0}" = 1 ]] || run t17-down-irqs "$DIR/t17-down-no-live-irqs.sh"
 	[[ "${SKIP_CHANNELS:-0}" = 1 ]] || run t19-channels "$DIR/t19-set-channels.sh"
+	[[ "${SKIP_T26:-0}" = 1 ]] || run t26-tx-shrink "$DIR/t26-tx-shrink.sh"
 	[[ "${SKIP_HCALL:-0}" = 1 ]] || run t16-hcall "$DIR/t16-hcall-deltas.sh"
 	# T23 before T20: both reload; T23 checks probe Current RX while still down.
 	[[ "${SKIP_T23:-0}" = 1 ]] || run t23-probe-real bash "$DIR/t23-probe-real-rx.sh"
