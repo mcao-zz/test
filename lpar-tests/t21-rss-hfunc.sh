@@ -1,7 +1,12 @@
 #!/bin/bash
 # T21 / P15 — RSS hash algorithm via ethtool get_rxfh / set_rxfh
 #
-# Quiet (default): get/set murmur|additive, reject key/indir/toeplitz, ping.
+# s2 v9 has no get_rxfh / set_rxfh on any firmware: by default (and on
+# non-MQ firmware always) ethtool -x and -X must fail with "not
+# supported", and UNDER_RX=1 is a skip. T21_EXPECT_RSS=1 runs the v8
+# checks below against a kernel that still has P15.
+#
+# Quiet (T21_EXPECT_RSS=1): get/set murmur|additive, reject key/indir/toeplitz, ping.
 # UNDER_RX=1: under proven inbound traffic, switch hfunc and require:
 #   - bulk + MQ spread still proven
 #   - error counters (invalid/no_buffer/replenish_fail) within MAX_ERR_DELTA
@@ -18,6 +23,7 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 : "${UNDER_RX:=0}"
 : "${T21_RX:=8}"          # geometry for under-traffic proof
 : "${MAX_ERR_DELTA:=50}"  # allow small noise under switch
+: "${T21_EXPECT_RSS:=0}"  # 1 = v8 P15 kernel; s2 v9 has no RSS hash control
 
 need_root
 need_peer
@@ -70,22 +76,30 @@ log "=== T21/P15 RSS hash algorithm (ethtool -x/-X) on $IFACE UNDER_RX=$UNDER_RX
 iface_up
 
 max=$(max_rx)
-if [[ "$max" -lt 2 ]]; then
-	[[ "$UNDER_RX" = 1 ]] && die "UNDER_RX=1 requires MQ firmware (max_rx=$max)"
-	log "max_rx=$max — non-MQ firmware; expect -EOPNOTSUPP on -x/-X"
+if [[ "$max" -lt 2 || "$T21_EXPECT_RSS" != 1 ]]; then
+	if [[ "$UNDER_RX" = 1 ]]; then
+		[[ "$max" -lt 2 ]] && die "UNDER_RX=1 requires MQ firmware (max_rx=$max)"
+		log "T21 SKIP under traffic: no RSS hash control (T21_EXPECT_RSS=0)"
+		exit 0
+	fi
+	log "max_rx=$max T21_EXPECT_RSS=$T21_EXPECT_RSS — expect -EOPNOTSUPP on -x/-X"
 	if ethtool -x "$IFACE" >"$LOGDIR/t21-rxfh-nomq.txt" 2>"$LOGDIR/t21-rxfh-nomq.err"; then
-		die "ethtool -x succeeded on non-MQ (want Operation not supported)"
+		die "ethtool -x succeeded (want Operation not supported)"
 	fi
 	if ! grep -qiE 'not supported|Operation not supported|EOPNOTSUPP' \
 		"$LOGDIR/t21-rxfh-nomq.err"; then
 		log "WARN: ethtool -x stderr (review $LOGDIR/t21-rxfh-nomq.err):"
 		cat "$LOGDIR/t21-rxfh-nomq.err" >&2 || true
 	fi
-	ok "non-MQ: get_rxfh rejected"
+	if ethtool -X "$IFACE" hfunc murmur \
+		>"$LOGDIR/t21-set-nomq.out" 2>"$LOGDIR/t21-set-nomq.err"; then
+		die "ethtool -X hfunc murmur succeeded (want Operation not supported)"
+	fi
+	ok "get_rxfh and set_rxfh rejected"
 	ping_ok
 	check_no_lockup
 	check_no_oops
-	log "T21 PASS (non-MQ EOPNOTSUPP)"
+	log "T21 PASS (EOPNOTSUPP)"
 	exit 0
 fi
 

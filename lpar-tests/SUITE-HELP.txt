@@ -50,11 +50,13 @@ run_mq_all.sh phases
 --------------------
 
   0  Dyndbg load (DYNDBG=1 default) — reload with dyndbg=+p
-  1  Quiet/functional — lab-smoke, smoke, stats, channels, reload, …
+  1  Quiet/functional — lab-smoke, smoke, stats, qstats (t24), channels,
+     t26 TX shrink, t27 reopen RX mode, t29 jumbo/pool, reload, …
      With EXTERNAL_IPERF=1 also runs under-RX coherence here.
+     t21 (RSS) is not in run_mq_all; s2 v9 has no RSS ops.
   2  Inbound gate — prove bulk RX (+ MQ spread unless SIMPLE_IPERF)
-  3  Heavy — T14 UNDER_RX, close-mq, parallel-stress, L-under-rx,
-             MQ re-proof between stages
+  3  Heavy — T14 UNDER_RX, close-mq, parallel-stress, t28 allocation
+             failures, L-under-rx, MQ re-proof between stages
   4  Cleanup + health summary
 
 run_rx_1_all.sh stages
@@ -101,10 +103,23 @@ Knobs (sudo KEY=val ./run_….sh  or  ./run_….sh KEY=val)
 
   Fine-grained SKIP_* (MQ): SKIP_LAB SKIP_SMOKE SKIP_T13 SKIP_STATS
     SKIP_T24 SKIP_T22 SKIP_T10 SKIP_T11 SKIP_T25 SKIP_STASH SKIP_T17
-    SKIP_CHANNELS SKIP_T26 SKIP_HCALL SKIP_T23 SKIP_T20 SKIP_CLOSE_SQ SKIP_L_CYCLE
-    SKIP_CLOSE_MQ SKIP_L_IPERF
+    SKIP_CHANNELS SKIP_T26 SKIP_T27 SKIP_T29 SKIP_HCALL SKIP_T23 SKIP_T20
+    SKIP_CLOSE_SQ SKIP_L_CYCLE SKIP_CLOSE_MQ SKIP_T28 SKIP_L_IPERF
     (SKIP_HCALL skips T16: v6 scale-up replenish/geometry — no hcall_* on -S)
     (SKIP_T25 skips mq_fallback ABI check — auto-detects MQ vs non-MQ FW)
+
+  s2 v9 test knobs:
+    EXPECT_DEBUGFS=1     t11 / t12 fail if buffer_pools is absent (default: skip)
+    T21_EXPECT_RSS=1     t21 runs the old ethtool -x/-X checks (default:
+                         expects them refused)
+    MC_CHECK=1           t27 asks for a peer ff02::1 ping after RX -L and
+                         counts Icmp6InEchos (interactive)
+    T28_PROB / T28_SECS  t28 failslab rate (20%) and time (30s)
+    T28_DRAIN=1          t28 extra 100% round (drained queue may stall
+                         until ifdown/up — WARN)
+    T28_MODE=stress      t28 via stress-ng instead of failslab
+    T29_MTU=9000         t29 jumbo MTU
+    T29_PEER_JUMBO=1     t29 DF ping at T29_MTU must work
 
   run_rx_1_all only:
     ROUNDS / BOUNCE_ROUNDS / SOAK_SECS / T1_ROUNDS / MID_RX
@@ -140,7 +155,7 @@ More docs
 ---------
 
   ../README.md                 Lab roles, traffic, suite overview
-  ../TEST-PLAN.txt             T1–T21 case list
+  ../TEST-PLAN.txt             T1–T29 case list (s2 v9 deltas section)
   ../TEST-PLAN-DEEP-DIVE.txt   Per-patch deep cases
   lab.conf.example             Config template
   head -40 run_mq_all.sh       Script header (knob dump)

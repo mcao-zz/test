@@ -1,10 +1,13 @@
-ibmveth MQ RX v6 — LPAR validation plan
-========================================
-Series: veth-mq-v6-squash (15 patches, base 805185b7c7a1)
-Tip (update when tip moves): 86afcb13035a
-Focus: open order, close under traffic, ethtool -L, poll hangs, SQ regression,
-       v6 stats ABI (no hcall_* / rxN_packets on ethtool -S), mq_fallback
-       max_rx cap, P14 correlator/shutdown, P15 RSS hash (ethtool -x/-X)
+ibmveth MQ RX — LPAR validation plan
+====================================
+Series under test: s2 (veth-mq-s2-v2, 13 patches, v9 internally) on
+fefea210df7f (s1 v2 + net v2). Tip (update when tip moves): c5955cfa0810.
+See SERIES.md for net / s1 tips.
+Focus: open order, close under traffic, ethtool -L reopen, poll hangs,
+       SQ regression, qstats (no per-queue ethtool -S keys), memory pressure
+
+History: written for v4-v6 (P-numbers below are v6 patch numbers). The
+"s2 v9 deltas" section overrides older text where they disagree.
 
 Repo: git@github.com:mcao-zz/test.git  branch veth-mq-tests
 Lab monoliths: verify-mq-adapter.sh, test-veth-mq.sh, rx_queue_size.sh
@@ -46,6 +49,29 @@ v4 deltas to validate (beyond v3 plan)
   ETH_RSS_HASH_ADDITIVE plus userspace ethtool that reads ETH_SS_RSS_HASH_FUNCS.
   key and indirection stay hypervisor-managed (-EOPNOTSUPP); non-MQ FW rejects
 
+s2 v9 deltas (override the v4/v6 text above and below)
+------------------------------------------------------
+* No debugfs buffer_pools, no RSS get/set_rxfh, no mq_fallback.
+  t11 and the t12 debugfs part skip unless EXPECT_DEBUGFS=1.
+  t21: ethtool -x / -X must be refused (T21_EXPECT_RSS=1 for the old checks).
+* ethtool -S has adapter-wide sums only (replenish_*, rx_invalid_buffer,
+  rx_no_buffer, ...), summed over all 16 RX slots. Per-queue counters are
+  netdev qstats: rx-hw-drops = rx-hw-drop-overruns = that queue's
+  rx_no_buffer total; rx-alloc-fail = replenish_no_mem + copybreak
+  failures. Retired queues' counts move into base stats (T24).
+* RX -L on a running device closes and reopens it, then restores the RX
+  mode (multicast list / promisc). On a closed device it only records the
+  counts and logs nothing. A TX-only -L keeps the live path (T27).
+  No "Successfully resized" / "Registered queue" lines exist any more.
+* Default RX count: min(netif_get_num_default_rss_queues(), 8), i.e. half
+  the online cores (SMT siblings counted once) when there are more than 2.
+  CMO partitions and firmware without MQ get one RX queue (max 1).
+* A queue whose refill posts no buffer gets no further interrupt (same as
+  single queue today; s2 07/13). Partial failures must recover by
+  themselves; a fully drained queue comes back on the next open (T28).
+* Subordinate mask H_PARAMETER while registering fails open with -EIO;
+  the next open is MQ again (QEMU f7 only; not forceable on PHYP).
+
 Prerequisites
 -------------
 * ppc64le PowerVM LPAR, MQ-capable PHYP (ILLAN MQ bit)
@@ -75,7 +101,12 @@ Quick map: risk → test
 | set_channels TX with RX                    | T19          |
 | Module reload restores MQ                  | T20          |
 | Probe real_num_rx != MAX while down (v5)   | T23          |
-| RSS hash algo get/set (P15)                | T21          |
+| RSS hash algo get/set (P15; not in s2 v9)  | T21          |
+| qstats ABI, base stats after shrink        | T24          |
+| TX shrink under traffic (net N1)           | T26          |
+| Link + RX mode across RX -L; TX-only -L    | T27          |
+| RX recovery after allocation failures      | T28          |
+| Jumbo MTU / pool sysfs with MQ             | T29          |
 
 Pass criteria (global)
 ----------------------
@@ -133,8 +164,8 @@ T8 — ethtool -L while down (stash path)
   ifdown
   ethtool -l  → note current
   ethtool -L $IFACE rx 4
-  # Must NOT allocate subordinates while down: no new "Registered queue"
-  # burst in dmesg beyond stash (watch dmesg -w briefly)
+  # Must NOT allocate subordinates while down. s2 v9 logs nothing for
+  # -L on a closed device; any ibmveth line from it is a WARN to review.
   ifup
   ethtool -l shows RX: 4; ping OK
   Pass: desired rx applied on open only (P13)
@@ -151,11 +182,12 @@ T11 — parallel -L and ifdown/up
   Pass: eventually quiescent; no close deadlock
 
 T12 — stats / debugfs smoke
-  ethtool -S $IFACE | grep -E 'replenish_|rx_invalid_buffer|rx[0-9]+_interrupts'
-  Expect v6 names: replenish_add_buff_success, rx_invalid_buffer,
-        rxN_interrupts / rxN_polls / rxN_no_buffer_drops (no hcall_*,
-        no rxN_packets — those are sysfs / ip -s link)
-  After MQ traffic: several rxN_interrupts increase (not only rx0)
+  ethtool -S $IFACE | grep -E 'replenish_|rx_invalid_buffer|rx_no_buffer'
+  s2 v9: adapter-wide names only (replenish_add_buff_success,
+        rx_invalid_buffer, rx_no_buffer, ...); no rxN_* keys, no hcall_*.
+        Per-queue activity is /proc/interrupts; per-queue counters are
+        qstats (T24). No debugfs: that part skips unless EXPECT_DEBUGFS=1.
+  After MQ traffic: several queues' /proc/interrupts lines increase
   ifdown; ethtool -S still readable; ifup; stats still readable
   Note: visible per-queue rows follow current RX geometry, not historical
         max geometry, but aggregate counters remain meaningful
@@ -192,10 +224,9 @@ v4-focused additions
 T14 — Resize geometry triple-check (automated by rx_queue_size.sh)
   After each -L N:
     ethtool -l RX == N
-    count(rxN_interrupts in -S) == N
-    count(/proc/interrupts matching $IFACE) == N
+    count(/proc/interrupts: $IFACE + ibmveth-<unit>-rxN) == N
     sysfs queues/rx-* == N (if present)
-    dmesg delta contains "Successfully resized to N RX queues"
+    (s2 v9 logs no "Successfully resized" line; rx_queue_size.sh only WARNs)
     no Oops/BUG; error counters not exploding
   T14_CYCLE=quick (run-all / t14 default): max→1→mid→max→1 (~5 steps)
   T14_CYCLE=full (standalone default): every integer up and down
@@ -211,19 +242,19 @@ T15 — Resize under multi-flow RX (cover-letter style)
   Watch: ethtool -S rx*_interrupts / rx*_polls move across queues; sysfs rx_packets climbs
   Pass: T14 checks under load; no hang; ping OK after
 
-T16 — scale-up/down side effects (v6: no hcall_* on ethtool -S)
+T16 — scale-up/down side effects (no hcall_* on ethtool -S)
   Snapshot ethtool -S before/after scale-up 4→8 and scale-down 8→4
-  Expect: replenish_add_buff_success increases on scale-up (new queues filled)
-          rx4..rx7_interrupts appear on scale-up and vanish on scale-down
+  Expect: replenish_add_buff_success increases on scale-up (s2 v9: every
+          RX -L reopens, so all queues are refilled, not only new ones)
+          ibmveth-<unit>-rx4..7 IRQ lines appear on scale-up, vanish after
           geometry / IRQ rows track 4→8→4
-  Pass: replenish Δ > 0; retired per-queue keys gone after shrink
+  Pass: replenish Δ > 0; IRQ lines match the RX count
 
 T17 — Down-state stash does not touch live IRQs
   ifup with rx 8; note IRQ lines
   ifdown; ethtool -L rx 2; confirm IRQ count still reflects down/closed
     state (no live subordinate IRQs while down)
-  dmesg while down must not show subordinate queue registration success
-    from the stash operation itself
+  dmesg while down: s2 v9 logs nothing for -L on a closed device
   ifup; ethtool -l RX: 2; IRQ lines == 2
   Pass: no allocate-while-down; no subordinate IRQ creation/registration
         while down; open publishes stashed count
@@ -261,7 +292,9 @@ T20 — Module reload restores MQ
 
 T23 — Probe real_num_rx_queues matches default while down (v5 / P10)
   rmmod/modprobe ibmveth; leave $IFACE DOWN
-  ethtool -l Current RX == min(nproc, 8) on MQ FW (or 1 on legacy),
+  ethtool -l Current RX == min(netif_get_num_default_rss_queues(), 8) on
+  MQ FW (online cores with SMT siblings once; halved, rounded up, if > 2),
+  or 1 on legacy / CMO,
   and must NOT equal Pre-set maximum when max > default
   Then ifup + ping
   Script: lpar-tests/t23-probe-real-rx.sh (SKIP_T23=1 to skip in run-all)
@@ -278,10 +311,61 @@ T21 — RSS hash algorithm (P15)
       soft evidence of hasher effect, not a hard remapping assert)
     Fail hard on "Cannot get RX ring count" or error storm / lost MQ spread
   On non-MQ FW (max_rx == 1): ethtool -x/-X → -EOPNOTSUPP
+  s2 v9 has no get/set_rxfh: the script expects -x and -X murmur to fail
+  (UNDER_RX=1 on MQ just skips). T21_EXPECT_RSS=1 restores the checks
+  above. Not part of run_mq_all.
   Script:
     sudo IFACE=$IFACE PEER=$PEER ./t21-rss-hfunc.sh
     sudo IFACE=$IFACE PEER=$PEER UNDER_RX=1 ./t21-rss-hfunc.sh
   Pass: quiet get/set/reject; under traffic no drops storm + MQ still spreads
+
+--------------------------------------------------------------------
+s2 additions
+--------------------------------------------------------------------
+
+T24 — netdev qstats ABI
+  Device / queue scope via ynl (KERNEL_SRC); queue entries == ethtool -l;
+  device rx-packets ≈ sysfs, hw-drop-overruns ≈ rx_missed_errors,
+  hw-drops ≈ ethtool rx_no_buffer, alloc-fail >= replenish_no_mem
+  (device scope: sysfs and -S include retired slots, the live-queue sum
+  does not); monotonic across ifdown/up.
+  6b: across an RX shrink device-scope counters do not go back and still
+  match sysfs / -S (retired queues moved into base).
+  Script: lpar-tests/t24-qstats-abi.sh
+
+T26 — TX shrink under traffic (net N1)
+  ethtool -L tx down while traffic runs; RX unchanged; no oops.
+  Script: lpar-tests/t26-tx-shrink.sh
+
+T27 — link and RX mode across RX -L; TX-only -L does not reopen
+  With a joined multicast address, then with PROMISC + ALLMULTI:
+  RX -L on a running device → close + open seen (dynamic debug), UP and
+  LOWER_UP kept, flags kept, ip maddr kept, no h_multicast_ctrl or
+  reopen errors, ping OK. PROMISC cleared stays cleared.
+  MC_CHECK=1: peer pings ff02::1 after the -L; DUT Icmp6InEchos must rise
+  (the only check that PHYP's filter was reprogrammed).
+  TX-only -L: no close/open, RX count and IRQ lines unchanged,
+  subordinate IRQ counts not restarted.
+  Script: lpar-tests/t27-reopen-rx-mode.sh
+
+T28 — RX recovery after allocation failures (heavy phase, needs inbound)
+  failslab limited to ibmveth's text (stack filter): T28_PROB% for
+  T28_SECS; replenish_no_mem must rise; every queue must receive again
+  without a reopen. T28_DRAIN=1 adds a 100% round: a drained queue may
+  stall (WARN, expected per 07/13) and must come back after ifdown/up.
+  Needs CONFIG_FAILSLAB, FAULT_INJECTION_DEBUG_FS,
+  FAULT_INJECTION_STACKTRACE_FILTER and ibmveth as a module, else skips
+  (T28_MODE=stress uses stress-ng; may OOM-kill iperf).
+  Script: lpar-tests/t28-mem-pressure-rx.sh
+
+T29 — jumbo MTU and pool sysfs with MQ
+  RX=8; MTU 9000 (reopen) → geometry kept, ping, DF ping (WARN unless
+  T29_PEER_JUMBO=1); RX -L 2 → 8 at jumbo; pool0/num halve → geometry
+  kept, num=0 rejected without change, restore. UNDER_RX=1 also proves
+  MQ RX under load after each step.
+  Note: MTU and pool sysfs reopen without restoring the RX mode, same as
+  before the series; only the -L path restores it.
+  Script: lpar-tests/t29-jumbo-mq.sh
 
 --------------------------------------------------------------------
 Suggested order
@@ -331,6 +415,11 @@ Auto harness (preferred for new tests):
   lpar-tests/t20-reload-restore-mq.sh — T20 module reload restores MQ
   lpar-tests/t23-probe-real-rx.sh — T23 probe Current RX == default while down
   lpar-tests/t21-rss-hfunc.sh    — T21/P15 RSS hash ethtool -x/-X
+  lpar-tests/t24-qstats-abi.sh   — T24 qstats ABI + after-shrink totals
+  lpar-tests/t26-tx-shrink.sh    — T26 TX shrink under traffic
+  lpar-tests/t27-reopen-rx-mode.sh — T27 RX -L reopen keeps link/RX mode
+  lpar-tests/t28-mem-pressure-rx.sh — T28 failslab recovery (heavy)
+  lpar-tests/t29-jumbo-mq.sh     — T29 jumbo MTU / pool sysfs with MQ
   lpar-tests/lab-smoke.sh        — wraps verify (+ optional test-veth-mq)
 
 Deep-dive by commit message: TEST-PLAN-DEEP-DIVE.txt (D01–D15)

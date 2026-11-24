@@ -23,9 +23,10 @@ save_dmesg_mark
 ethtool_rx "$STASH_RX" || die "ethtool -L rx $STASH_RX while down failed"
 dmesg_delta "$LOGDIR/t8-stash-dmesg.txt"
 
-reg=$(grep -cE "Registered queue|Successfully resized" "$LOGDIR/t8-stash-dmesg.txt" || true)
+# s2 v9 -L on a closed device only records the counts: it logs nothing.
+reg=$(grep -ciE "ibmveth|${IFACE}" "$LOGDIR/t8-stash-dmesg.txt" || true)
 if [[ "${reg:-0}" -gt 0 ]]; then
-	log "WARN: $reg resize/register lines while down (review $LOGDIR/t8-stash-dmesg.txt)"
+	log "WARN: $reg ibmveth lines from -L while down (review $LOGDIR/t8-stash-dmesg.txt)"
 fi
 
 iface_up

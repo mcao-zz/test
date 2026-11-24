@@ -3,12 +3,15 @@
 #
 # Validates the netdev_stat_ops get_queue_stats_rx/tx path introduced in v8:
 #   - NETDEV_CMD_QSTATS_GET (netlink netdev-genl family) returns entries for IFACE
-#   - Per-queue fields present: rx-packets, rx-bytes, rx-hw-drops,
-#     rx-hw-drop-overruns (= no_buffer_pair), rx-alloc-fail (= replenish_no_mem)
+#   - Per-queue fields present: rx-packets, rx-bytes, rx-hw-drops and
+#     rx-hw-drop-overruns (both = the queue's rx_no_buffer total in s2 v9),
+#     rx-alloc-fail (= replenish_no_mem + copybreak allocation failures)
 #   - Per-queue TX: tx-packets, tx-bytes
 #   - Queue count in qstats matches ethtool -l current RX after -L resize
-#   - hw-drop-overruns matches ndo_get_stats64 rx_missed_errors (same source)
-#   - All counters monotonic across ifdown/up
+#   - Device-scope rx-packets / hw-drop-overruns / hw-drops / alloc-fail
+#     match sysfs and ethtool -S (all of them include retired RX slots)
+#   - All counters monotonic across ifdown/up and across an RX shrink,
+#     and still match sysfs / ethtool -S after it (6b)
 #
 # Requires: Python 3 + kernel source tree (for ynl library)
 # Set KERNEL_SRC= to the kernel tree (default: look for ../linux relative to ROOT)
@@ -228,113 +231,69 @@ PYEOF
 ok "queue-scope geometry validated (RX=$n_ethtool)"
 log ""
 
-# --- 3. Aggregate coherence: sum(per-queue rx-packets) ≈ sysfs rx_packets ---
-log "--- 3. aggregate coherence: sum per-queue rx-packets vs sysfs ---"
-sysfs_rx=$(cat "/sys/class/net/$IFACE/statistics/rx_packets" 2>/dev/null || echo 0)
-python3 - "$tmpq" "$sysfs_rx" "$IFACE" <<'PYEOF'
+# --- 3/4. Device-scope totals vs sysfs and ethtool -S ---
+# sysfs and ethtool -S sum all 16 RX slots; device-scope qstats is base
+# (slots >= real_num) plus live queues. The live-queue sum alone misses
+# whatever a queue earned before an earlier RX shrink, so compare the
+# device entry and only require live sum <= device.
+log "--- 3/4. device-scope totals vs sysfs / ethtool -S ---"
+tmpd3=$(mktemp)
+_qstats_dump "$tmpd3" "device" "$IFINDEX"
+_qstats_dump "$tmpq" "queue" "$IFINDEX"
+_t24_counters() {
+	local nb nm
+	nb=$(stat_val rx_no_buffer)
+	nm=$(stat_val replenish_no_mem)
+	echo "$(link_stat rx_packets) $(link_stat rx_missed_errors) ${nb:-0} ${nm:-0}"
+}
+_t24_check_totals() {
+	python3 - "$1" "$2" $3 <<'PYEOF'
 import json, sys
 
-data     = json.load(open(sys.argv[1]))
-sysfs_rx = int(sys.argv[2])
-iface    = sys.argv[3]
+dev  = json.load(open(sys.argv[1]))[0]
+q    = [e for e in json.load(open(sys.argv[2])) if e.get("queue-type") == "rx"]
+sys_rx, sys_missed, no_buf, no_mem = (int(x or 0) for x in sys.argv[3:7])
 
-rx_entries = [e for e in data if e.get("queue-type") == "rx"]
-qstats_sum = sum(e.get("rx-packets", 0) for e in rx_entries)
+def tol(*v, floor=100):
+    return max(floor, int(max(v) * 0.01))
 
-diff = abs(qstats_sum - sysfs_rx)
-# Non-atomic read: tolerate small skew; hard-fail if off by >1%+1000
-tol = max(1000, int(max(qstats_sum, sysfs_rx) * 0.01))
-print(f"  sum(per-queue rx-packets)={qstats_sum}  sysfs rx_packets={sysfs_rx}  Δ={diff}  tol={tol}")
-if diff > tol:
-    print(f"FAIL: qstats sum vs sysfs mismatch Δ={diff} > tol={tol}")
-    sys.exit(1)
-print("OK: per-queue rx-packets sum ≈ sysfs rx_packets")
+fail = False
+def same(name, d, ref, refname, floor=100):
+    global fail
+    t = tol(d, ref, floor=floor)
+    print(f"  device {name}={d}  {refname}={ref}  Δ={d - ref}  tol={t}")
+    if abs(d - ref) > t:
+        print(f"FAIL: device {name} vs {refname}")
+        fail = True
+
+same("rx-packets", dev.get("rx-packets", 0), sys_rx, "sysfs rx_packets", 1000)
+if "rx-hw-drop-overruns" in dev:
+    same("rx-hw-drop-overruns", dev["rx-hw-drop-overruns"], sys_missed,
+         "sysfs rx_missed_errors")
+if "rx-hw-drops" in dev:
+    same("rx-hw-drops", dev["rx-hw-drops"], no_buf, "ethtool rx_no_buffer")
+if "rx-alloc-fail" in dev:
+    d = dev["rx-alloc-fail"]
+    t = tol(d, no_mem, floor=10)
+    print(f"  device rx-alloc-fail={d}  ethtool replenish_no_mem={no_mem}  tol={t}")
+    if d < no_mem - t:
+        print("FAIL: rx-alloc-fail below replenish_no_mem")
+        fail = True
+    elif d > no_mem + t:
+        print(f"NOTE: {d - no_mem} more in rx-alloc-fail: copybreak allocation failures")
+
+for k in ("rx-packets", "rx-bytes", "rx-hw-drops", "rx-alloc-fail"):
+    live = sum(e.get(k, 0) for e in q)
+    d = dev.get(k, 0)
+    print(f"  {k}: live queues={live}  device={d}  base={d - live}")
+    if live > d + tol(live, d, floor=1000):
+        print(f"FAIL: live-queue {k} sum exceeds device total")
+        fail = True
+sys.exit(1 if fail else 0)
 PYEOF
-log ""
-
-# --- 4. hw_drop_overruns coherence: sum ≈ sysfs rx_missed_errors ---
-log "--- 4. hw_drop_overruns vs sysfs rx_missed_errors ---"
-sysfs_missed=$(cat "/sys/class/net/$IFACE/statistics/rx_missed_errors" 2>/dev/null || echo 0)
-python3 - "$tmpq" "$sysfs_missed" "$IFACE" <<'PYEOF'
-import json, sys
-
-data           = json.load(open(sys.argv[1]))
-sysfs_missed   = int(sys.argv[2])
-iface          = sys.argv[3]
-
-rx_entries = [e for e in data if e.get("queue-type") == "rx"]
-if not all("rx-hw-drop-overruns" in e for e in rx_entries):
-    print("WARN: rx-hw-drop-overruns absent from some/all RX queue entries — skip coherence")
-    sys.exit(0)
-
-overruns_sum = sum(e.get("rx-hw-drop-overruns", 0) for e in rx_entries)
-diff = abs(overruns_sum - sysfs_missed)
-# Base may include retired-queue portion from get_base_stats; tolerate small skew
-tol  = max(100, int(max(overruns_sum, sysfs_missed) * 0.01))
-print(f"  sum(hw-drop-overruns)={overruns_sum}  sysfs rx_missed_errors={sysfs_missed}  Δ={diff}")
-if diff > tol:
-    print(f"FAIL: hw_drop_overruns sum vs rx_missed_errors Δ={diff} > tol={tol}")
-    sys.exit(1)
-print("OK: sum(hw-drop-overruns) ≈ sysfs rx_missed_errors (same source: no_buffer_pair)")
-PYEOF
-log ""
-
-# --- 4b. rx-hw-drops coherence: sum ≈ rx_no_buffer + rx_invalid_buffer ---
-# get_queue_stats_rx: hw_drops = no_buffer_pair + invalid_buffers
-# ethtool -S: rx_no_buffer = sum(no_buffer_pair), rx_invalid_buffer = sum(invalid_buffers)
-log "--- 4b. rx-hw-drops vs ethtool -S (rx_no_buffer + rx_invalid_buffer) ---"
-ethtool_no_buf=$(stat_val rx_no_buffer);    ethtool_no_buf=${ethtool_no_buf:-0}
-ethtool_inv=$(stat_val rx_invalid_buffer);  ethtool_inv=${ethtool_inv:-0}
-ethtool_hw_drops=$(( ethtool_no_buf + ethtool_inv ))
-python3 - "$tmpq" "$ethtool_hw_drops" "$IFACE" <<'PYEOF'
-import json, sys
-
-data             = json.load(open(sys.argv[1]))
-ethtool_hw_drops = int(sys.argv[2])
-iface            = sys.argv[3]
-
-rx_entries = [e for e in data if e.get("queue-type") == "rx"]
-if not all("rx-hw-drops" in e for e in rx_entries):
-    print("WARN: rx-hw-drops absent from some/all RX queue entries — skip coherence")
-    sys.exit(0)
-
-qstats_hw_drops = sum(e.get("rx-hw-drops", 0) for e in rx_entries)
-diff = abs(qstats_hw_drops - ethtool_hw_drops)
-tol  = max(100, int(max(qstats_hw_drops, ethtool_hw_drops) * 0.01))
-print(f"  sum(rx-hw-drops)={qstats_hw_drops}  ethtool(rx_no_buffer+rx_invalid_buffer)={ethtool_hw_drops}  Δ={diff}")
-if diff > tol:
-    print(f"FAIL: rx-hw-drops sum vs ethtool -S Δ={diff} > tol={tol}")
-    sys.exit(1)
-print("OK: sum(rx-hw-drops) ≈ rx_no_buffer + rx_invalid_buffer")
-PYEOF
-log ""
-
-# --- 4c. rx-alloc-fail coherence: sum ≈ replenish_no_mem ---
-# get_queue_stats_rx: alloc_fail = replenish_no_mem per queue
-# ethtool -S: replenish_no_mem = sum across all queues
-log "--- 4c. rx-alloc-fail vs ethtool -S replenish_no_mem ---"
-ethtool_nomem=$(stat_val replenish_no_mem); ethtool_nomem=${ethtool_nomem:-0}
-python3 - "$tmpq" "$ethtool_nomem" "$IFACE" <<'PYEOF'
-import json, sys
-
-data           = json.load(open(sys.argv[1]))
-ethtool_nomem  = int(sys.argv[2])
-iface          = sys.argv[3]
-
-rx_entries = [e for e in data if e.get("queue-type") == "rx"]
-if not all("rx-alloc-fail" in e for e in rx_entries):
-    print("WARN: rx-alloc-fail absent from some/all RX queue entries — skip coherence")
-    sys.exit(0)
-
-qstats_alloc = sum(e.get("rx-alloc-fail", 0) for e in rx_entries)
-diff = abs(qstats_alloc - ethtool_nomem)
-tol  = max(10, int(max(qstats_alloc, ethtool_nomem) * 0.01))
-print(f"  sum(rx-alloc-fail)={qstats_alloc}  ethtool replenish_no_mem={ethtool_nomem}  Δ={diff}")
-if diff > tol:
-    print(f"FAIL: rx-alloc-fail sum vs replenish_no_mem Δ={diff} > tol={tol}")
-    sys.exit(1)
-print("OK: sum(rx-alloc-fail) ≈ replenish_no_mem")
-PYEOF
+}
+_t24_check_totals "$tmpd3" "$tmpq" "$(_t24_counters)"
+ok "device-scope totals match sysfs / ethtool -S"
 log ""
 
 # --- 5. Monotonic across ifdown/up ---
@@ -393,6 +352,9 @@ if len(rx) != n:
 print(f"OK: RX queue count={len(rx)} matches after scale-up to {n}")
 PYEOF
 
+[[ -n "${PEER:-}" ]] && ping -I "$IFACE" -c 20 -i 0.2 -W 2 "$PEER" >/dev/null 2>&1 || true
+tmpd6a=$(mktemp)
+_qstats_dump "$tmpd6a" "device" "$IFINDEX"
 ethtool_rx "$n_half" || die "ethtool -L rx $n_half failed"
 sleep 1
 tmpq_half=$(mktemp)
@@ -408,6 +370,26 @@ if len(rx) != n:
 print(f"OK: RX queue count={len(rx)} matches after scale-down to {n}")
 PYEOF
 
+# --- 6b. Stats after shrink: retired queues move into base ---
+log "--- 6b. totals after shrink to $n_half ---"
+tmpd6b=$(mktemp)
+_qstats_dump "$tmpd6b" "device" "$IFINDEX"
+python3 - "$tmpd6a" "$tmpd6b" <<'PYEOF'
+import json, sys
+before = json.load(open(sys.argv[1]))[0]
+after  = json.load(open(sys.argv[2]))[0]
+bad = [f"{k}: {before[k]} -> {after.get(k, 0)}" for k in before
+       if k != "ifindex" and isinstance(before[k], int) and after.get(k, 0) < before[k]]
+if bad:
+    print("FAIL: device-scope qstats went backwards across RX shrink:")
+    for m in bad:
+        print(f"  {m}")
+    sys.exit(1)
+print(f"OK: device-scope qstats monotonic across RX shrink")
+PYEOF
+_t24_check_totals "$tmpd6b" "$tmpq_half" "$(_t24_counters)"
+ok "stats after shrink: device = base + live queues, matches sysfs / ethtool -S"
+
 # Restore
 ethtool_rx "$m" || true
 ok "queue-scope count tracks ethtool -L (full=$m half=$n_half)"
@@ -416,7 +398,8 @@ log ""
 # cleanup
 rm -f "$tmpdev" "${tmpdev}.err" "$tmpdev2" "${tmpdev2}.err" \
       "$tmpq" "${tmpq}.err" "$tmpq_full" "${tmpq_full}.err" \
-      "$tmpq_half" "${tmpq_half}.err"
+      "$tmpq_half" "${tmpq_half}.err" "$tmpd3" "${tmpd3}.err" \
+      "$tmpd6a" "${tmpd6a}.err" "$tmpd6b" "${tmpd6b}.err"
 
 [[ -n "${PEER:-}" ]] && ping_ok || true
 check_no_oops

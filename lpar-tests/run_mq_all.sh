@@ -4,10 +4,10 @@
 # Formerly run-all.sh (that name remains a compatibility wrapper).
 #
 #   0) Optional: reload ibmveth with dyndbg=+p (DYNDBG=1, default)
-#   1) Quiet: smoke, t8, t12, t22, t19, t16, t23, t20
+#   1) Quiet: smoke, t8, t12, t24, t22, t19, t26, t27, t29, t16, t23, t20
 #   2) Interactive: start DUT iperf servers, prompt for lp7 clients,
 #      prove bulk inbound + MQ RX spread under load
-#   3) Heavy: re-prove MQ RX, t22 under RX, t14, re-prove, close/parallel/-L
+#   3) Heavy: re-prove MQ RX, t22 under RX, t14, re-prove, close/parallel/t28/-L
 #      with MQ RX proofs between stages (lp7 clients must stay up)
 #   4) Final MQ RX proof + ping
 #
@@ -39,7 +39,7 @@ while [[ $# -gt 0 ]]; do
 		--help|-h|help)
 			exec "$DIR/suite-help.sh" mq
 			;;
-		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SIMPLE_IPERF=*|SKIP_*=*|NONINTERACTIVE=*|MIN_*=*|MQ_*=*|IPERF_*=*|LAB_FULL=*|DUT_IP=*|RESTART_IPERF=*|CHECK_HEALTH=*|CHECK_MEM=*|MEM_GROW_MB=*|MEM_FAIL=*|HEALTH_FAIL=*|HEALTH_UNLOAD=*|T14_CYCLE=*|RX_CYCLE=*|DELAY=*)
+		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SIMPLE_IPERF=*|SKIP_*=*|NONINTERACTIVE=*|MIN_*=*|MQ_*=*|IPERF_*=*|LAB_FULL=*|DUT_IP=*|RESTART_IPERF=*|CHECK_HEALTH=*|CHECK_MEM=*|MEM_GROW_MB=*|MEM_FAIL=*|HEALTH_FAIL=*|HEALTH_UNLOAD=*|T14_CYCLE=*|T2[0-9]_*=*|MC_CHECK=*|RX_CYCLE=*|DELAY=*)
 			export "${1?}"
 			shift
 			;;
@@ -204,6 +204,8 @@ if [[ "${SKIP_QUIET:-0}" != 1 ]]; then
 	[[ "${SKIP_T17:-0}" = 1 ]] || run t17-down-irqs "$DIR/t17-down-no-live-irqs.sh"
 	[[ "${SKIP_CHANNELS:-0}" = 1 ]] || run t19-channels "$DIR/t19-set-channels.sh"
 	[[ "${SKIP_T26:-0}" = 1 ]] || run t26-tx-shrink "$DIR/t26-tx-shrink.sh"
+	[[ "${SKIP_T27:-0}" = 1 ]] || run t27-reopen-rx-mode "$DIR/t27-reopen-rx-mode.sh"
+	[[ "${SKIP_T29:-0}" = 1 ]] || run t29-jumbo-mq "$DIR/t29-jumbo-mq.sh"
 	[[ "${SKIP_HCALL:-0}" = 1 ]] || run t16-hcall "$DIR/t16-hcall-deltas.sh"
 	# T23 before T20: both reload; T23 checks probe Current RX while still down.
 	[[ "${SKIP_T23:-0}" = 1 ]] || run t23-probe-real bash "$DIR/t23-probe-real-rx.sh"
@@ -273,6 +275,11 @@ if [[ "${SKIP_HEAVY:-0}" != 1 ]]; then
 			"$DIR/parallel-stress.sh"
 	[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
 		run mq-rx-post-parallel "$DIR/t-mq-rx-under-load.sh" post-parallel
+
+	[[ "${SKIP_T28:-0}" = 1 ]] || \
+		run t28-mem-pressure "$DIR/t28-mem-pressure-rx.sh"
+	[[ "${SKIP_MQ_PROOF:-0}" = 1 ]] || \
+		run mq-rx-post-t28 "$DIR/t-mq-rx-under-load.sh" post-t28
 
 	[[ "${SKIP_L_IPERF:-0}" = 1 ]] || \
 		run L-under-rx env LOOPS=3 IPERF=0 "$DIR/ethtool-L-cycle.sh"

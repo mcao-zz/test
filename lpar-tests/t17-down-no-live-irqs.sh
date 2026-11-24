@@ -48,9 +48,10 @@ if [[ "$irqs_down_after" -eq "$RX_STASH" && "$RX_STASH" -gt 1 && "$irqs_down_bef
 fi
 ok "no new live IRQ lines while DOWN after stash -L"
 
-reg=$(grep -cE "Registered queue|Successfully resized" "$LOGDIR/t17-stash-dmesg.txt" || true)
+# s2 v9 -L on a closed device only records the counts: it logs nothing.
+reg=$(grep -ciE "ibmveth|${IFACE}" "$LOGDIR/t17-stash-dmesg.txt" || true)
 if [[ "${reg:-0}" -gt 0 ]]; then
-	log "WARN: $reg resize/register lines while down (review $LOGDIR/t17-stash-dmesg.txt)"
+	log "WARN: $reg ibmveth lines from -L while down (review $LOGDIR/t17-stash-dmesg.txt)"
 fi
 
 iface_up

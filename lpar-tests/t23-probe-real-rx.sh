@@ -3,8 +3,12 @@
 #
 # alloc_etherdev_mqs() sizes real_num_rx_queues to IBMVETH_MAX_RX_QUEUES.
 # Probe must call netif_set_real_num_rx_queues(adapter->num_rx_queues) so
-# while-down ethtool -l Current RX matches the default (1 or min(cpus,8)),
-# not MAX.
+# while-down ethtool -l Current RX matches the default, not MAX.
+#
+# s2 v9 default: netif_get_num_default_rss_queues() capped at
+# IBMVETH_DEFAULT_QUEUES (8). That counts online cores with SMT siblings
+# once and rounds half of them up (all of them when 2 or fewer). Non-MQ
+# firmware and CMO partitions stay at 1.
 #
 #   sudo IFACE=env9 PEER=192.168.100.2 ./t23-probe-real-rx.sh
 #   sudo IFACE=env9 PEER=... IBMVETH_KO=/path/to/ibmveth.ko ./t23-probe-real-rx.sh
@@ -51,18 +55,28 @@ if ip link show "$IFACE" | head -1 | grep -qE '<[^>]*UP'; then
 	die "IFACE still UP after ifdown (cannot check probe real_num)"
 fi
 
+# Online cores, SMT siblings once (cpu0 has no "online" file).
+online_cores() {
+	local d
+	for d in /sys/devices/system/cpu/cpu[0-9]*; do
+		[[ -r $d/online && $(cat "$d/online") = 0 ]] && continue
+		cat "$d/topology/thread_siblings_list"
+	done | sort -u | wc -l
+}
+
 cur=$(current_rx)
 max=$(max_rx)
-cpus=$(nproc)
+cores=$(online_cores)
 if [[ "$max" -le 1 ]]; then
 	want=1
 else
-	want=$cpus
+	want=$cores
+	[[ "$want" -gt 2 ]] && want=$(((want + 1) / 2))
 	[[ "$want" -gt "$DEFAULT_QUEUES" ]] && want=$DEFAULT_QUEUES
 	[[ "$want" -lt 1 ]] && want=1
 fi
 
-log "while DOWN after probe: Current RX=$cur  max_rx=$max  want_default=$want (cpus=$cpus DEFAULT_QUEUES=$DEFAULT_QUEUES)"
+log "while DOWN after probe: Current RX=$cur  max_rx=$max  want_default=$want (cores=$cores nproc=$(nproc) DEFAULT_QUEUES=$DEFAULT_QUEUES)"
 
 [[ -n "$cur" && "$cur" -ge 1 ]] || die "Current RX empty/invalid while down ($cur)"
 [[ "$cur" -le "$max" ]] || die "Current RX=$cur > max_rx=$max"

@@ -677,11 +677,20 @@ dmesg_delta() {
 	echo "$cur" > "$LOGDIR/dmesg.mark"
 }
 
+# Per-step dmesg capture that leaves the test-wide mark alone:
+#   mk=$(dmesg | wc -l); ...; dmesg_since "$mk" "$out"
+dmesg_since() {
+	dmesg | tail -n +"$(( $1 + 1 ))" >"$2"
+}
+
 check_no_lockup() {
-	local f="$LOGDIR/dmesg-LOCKUP.txt"
+	local f="$LOGDIR/dmesg-LOCKUP.txt" mark
 	# New lines since the last mark only. dmesg | tail -200 also
 	# matches leftover kmemleak RCU stalls from an earlier run.
+	# Keep the mark: check_no_oops usually runs next on the same delta.
+	mark=$(cat "$LOGDIR/dmesg.mark" 2>/dev/null || echo 0)
 	dmesg_delta "$f"
+	echo "$mark" >"$LOGDIR/dmesg.mark"
 	if grep -Eiq 'soft lockup|hard LOCKUP|hung_task' "$f"; then
 		die "lockup / hung task seen in dmesg"
 	fi

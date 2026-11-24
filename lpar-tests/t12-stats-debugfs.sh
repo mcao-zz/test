@@ -3,6 +3,8 @@
 #
 # s2 ethtool -S is the 13 adapter keys only. Per-queue packets/bytes/drops
 # are netdev_stat_ops (t24). Leftover v8 rxN_interrupts / rxN_polls are gone.
+# s2 v9 has no debugfs: the buffer_pools part is skipped when the file is
+# absent (EXPECT_DEBUGFS=1 makes it required again, for v8 kernels).
 set -euo pipefail
 DIR=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=env.sh
@@ -44,9 +46,10 @@ if ethtool -S "$IFACE" 2>/dev/null | grep -qE '^[[:space:]]*rx[0-9]+_interrupts:
 else
 	ok "rx%d_interrupts correctly absent from ethtool -S"
 fi
-# no_buffer_drops feeds netdev_stat_ops get_queue_stats_rx:
-# hw_drop_overruns = no_buffer_pair, hw_drops = pair + invalid_buffers,
-# alloc_fail = replenish_no_mem. sysfs rx_missed_errors is the aggregate proxy.
+# no_buffer feeds netdev_stat_ops get_queue_stats_rx (s2 v9):
+# hw_drops = hw_drop_overruns = the queue's rx_no_buffer total,
+# alloc_fail = replenish_no_mem + copybreak allocation failures.
+# sysfs rx_missed_errors is the aggregate proxy.
 sysfs_missed=$(cat "/sys/class/net/${IFACE}/statistics/rx_missed_errors" 2>/dev/null || true)
 if [[ -n "$sysfs_missed" ]]; then
 	ok "sysfs rx_missed_errors=$sysfs_missed (hw_drop_overruns proxy reachable)"
@@ -54,13 +57,18 @@ else
 	log "WARN: /sys/class/net/$IFACE/statistics/rx_missed_errors not readable"
 fi
 
-# debugfs buffer_pools — must exist and look live while UP
-bp=$(iface_buffer_pools) || die "missing debugfs buffer_pools (IFACE=$IFACE)"
-ok "buffer_pools at $bp"
-head -20 "$bp" | tee "$LOGDIR/buffer_pools.txt" >/dev/null
-assert_buffer_pools_up "T12"
-grep -qiE 'Count' "$bp" || log "WARN: buffer_pools header missing Count (v6 name)"
-grep -qiE 'queue|pool|buff' "$bp" || log "WARN: unexpected buffer_pools format"
+# debugfs buffer_pools (v8 only) — must exist and look live while UP
+if bp=$(iface_buffer_pools); then
+	ok "buffer_pools at $bp"
+	head -20 "$bp" | tee "$LOGDIR/buffer_pools.txt" >/dev/null
+	assert_buffer_pools_up "T12"
+	grep -qiE 'Count' "$bp" || log "WARN: buffer_pools header missing Count (v6 name)"
+	grep -qiE 'queue|pool|buff' "$bp" || log "WARN: unexpected buffer_pools format"
+elif [[ "${EXPECT_DEBUGFS:-0}" = 1 ]]; then
+	die "missing debugfs buffer_pools (IFACE=$IFACE, EXPECT_DEBUGFS=1)"
+else
+	ok "skip buffer_pools (no debugfs in s2 v9)"
+fi
 
 # historical pool0 sysfs still there (under netdev)
 if [[ -d /sys/class/net/$IFACE/pool0 ]] || \

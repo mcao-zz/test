@@ -24,7 +24,12 @@ need_root
 save_dmesg_mark
 iface_up
 
-bp=$(iface_buffer_pools) || die "missing buffer_pools under /sys/kernel/debug (IFACE=$IFACE; expect /sys/kernel/debug/ibmveth/<vio>/buffer_pools — try: find /sys/kernel/debug -name buffer_pools)"
+if ! bp=$(iface_buffer_pools); then
+	# s2 v9 has no debugfs; EXPECT_DEBUGFS=1 for a v8 kernel.
+	[[ "${EXPECT_DEBUGFS:-0}" = 1 ]] && die "missing buffer_pools under /sys/kernel/debug (IFACE=$IFACE; expect /sys/kernel/debug/ibmveth/<vio>/buffer_pools — try: find /sys/kernel/debug -name buffer_pools)"
+	log "T11 SKIP: no debugfs buffer_pools (s2 v9)"
+	exit 0
+fi
 ok "buffer_pools at $bp"
 if [[ "$bp" == */ibmveth/*/buffer_pools ]]; then
 	log "NOTE: nested ibmveth/<vio>/ path (J11-3) — OK"
