@@ -8,7 +8,9 @@ View this anytime:
   sudo ./run_legacy_all.sh --help
   sudo ./run_rx_1_all.sh --help
 
-Prefer lab.conf for IFACE / PEER / DUT_IP / IBMVETH_KO / iperf knobs.
+Prefer lab.conf for IFACE / PEER / DUT_IP / IBMVETH_KO / iperf knobs,
+optional KERNEL_SRC (t24), LEGACY (run_all.sh), EXPECT_KERNEL (preflight).
+See README.md in this directory.
 Do NOT also pass IFACE= or PEER= on the sudo line (CLI wins; easy wrong-L2).
 One-shot knobs (SKIP_*, T14_CYCLE, EXTERNAL_IPERF, …) on the sudo line are OK.
 

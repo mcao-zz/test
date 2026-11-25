@@ -9,11 +9,19 @@
 # Optional: LAB_CONF=/path/to/other.conf
 
 # --- profile: mq (env9 private L2) ---
+# Example sites: balco 192.168.1.x; ltcd51-lp19 192.168.100.2/3 (see README).
 IFACE=env9
 PEER=192.168.1.153
 DUT_IP=192.168.1.133
 IBMVETH_KO=/home/ming/ibmveth-build
 EXTERNAL_IPERF=1
+
+# Optional: kernel tree with Documentation/netlink/specs/netdev.yaml (t24).
+# If unset, env.sh tries /lib/modules/$(uname -r)/{source,build} and common paths.
+# KERNEL_SRC=/root/ming/linux
+
+# Optional: fail preflight when uname -r does not match this git short SHA.
+# EXPECT_KERNEL=81a8f2902bc3
 
 # iperf (DUT servers + peer clients)
 IPERF_PORT_FIRST=5201

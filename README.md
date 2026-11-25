@@ -57,7 +57,12 @@ sudo EXTERNAL_IPERF=1 ./run_mq_all.sh   # OK: one-shot knob, not IFACE/PEER
 ```
 
 Variables: `IFACE`, `PEER`, `DUT_IP`, `IBMVETH_KO`, `EXTERNAL_IPERF`,
-`IPERF_PORT_FIRST`/`LAST`, `IPERF_PARALLEL`, `IPERF_TIME` (`0` = forever).
+`IPERF_PORT_FIRST`/`LAST`, `IPERF_PARALLEL`, `IPERF_TIME` (`0` = forever),
+`KERNEL_SRC` (optional — **t24** qstats only; auto-detected if omitted),
+`LEGACY` (for `run_all.sh`: `iface=peer_ip` pairs, space-separated),
+`EXPECT_KERNEL` (optional preflight SHA match).
+
+Details: **`lpar-tests/SUITE-HELP.txt`** and **`lpar-tests/README.md`**.
 
 **Do not** pass `IFACE=` / `PEER=` / `DUT_IP=` / `IBMVETH_KO=` on the command
 line when `lab.conf` is set — those env vars win over the file and are easy
@@ -237,6 +242,28 @@ Debug helpers: `enable-ibmveth-debug.sh`, `disable-ibmveth-debug.sh`,
 `plug-mq-adapter.sh`.
 
 ---
+
+## Running on another LPAR
+
+The harness is **not tied to ltcd51** — it only needs a **DUT + peer** layout
+you describe in `lab.conf`:
+
+| Requirement | Notes |
+|-------------|--------|
+| **ppc64le PowerVM** | MQ suite needs PHYP with **ILLAN MQ** on the test adapter |
+| **Same L2** | `PEER` must answer `ping -I $IFACE` (not another NIC’s subnet) |
+| **Peer iperf** | For heavy phase: many clients → `DUT_IP`, ports from `lab.conf` |
+| **Root on DUT** | Module reload / `ethtool -L` / debugfs |
+| **Optional legacy LPAR or 2nd NIC** | `LEGACY="net0=x.x.x.x"` for `run_all.sh` (true `max_rx==1`) |
+| **Kernel tree** | Only for **t24**; set `KERNEL_SRC` in `lab.conf` or install headers via `modules_install` |
+
+Copy the repo (branch **`veth-mq-tests`**), `cp lpar-tests/lab.conf.example
+lab.conf`, edit IPs and `IBMVETH_KO`, run `preflight.sh` then `run_mq_all.sh`
+or `run_all.sh`. Use **`EXTERNAL_IPERF=1`** when the lab already runs
+long-lived iperf (see two-LPAR section above).
+
+QEMU (**`numa/tools/qemu/`** in notes) is a **subset** of the same scripts;
+results are not interchangeable with LPAR sign-off.
 
 ## Requirements
 
