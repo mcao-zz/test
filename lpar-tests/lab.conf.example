@@ -20,6 +20,10 @@ EXTERNAL_IPERF=1
 # (default 64 is tight on ltcd51 with lab iperf; Δ~185 seen on 8→16).
 MAX_NOBUF_DELTA=256
 DELAY=2
+# parallel-stress (-L + ifdown/up for 300s under lab iperf): cap on each of
+# invalid/no_buffer/replenish_fail growth. Default 1000; Δno_buffer~2351
+# seen on ltcd51 with invalid and replenish_fail both 0.
+PARALLEL_MAX_ERR_DELTA=4096
 
 # On DUT: install iperf3 via dnf/yum if missing (preflight + heavy phase).
 IPERF_AUTO_INSTALL=1
