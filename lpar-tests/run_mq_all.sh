@@ -39,7 +39,7 @@ while [[ $# -gt 0 ]]; do
 		--help|-h|help)
 			exec "$DIR/suite-help.sh" mq
 			;;
-		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SIMPLE_IPERF=*|SKIP_*=*|NONINTERACTIVE=*|MIN_*=*|MQ_*=*|IPERF_*=*|LAB_FULL=*|DUT_IP=*|RESTART_IPERF=*|CHECK_HEALTH=*|CHECK_MEM=*|MEM_GROW_MB=*|MEM_FAIL=*|HEALTH_FAIL=*|HEALTH_UNLOAD=*|T14_CYCLE=*|T2[0-9]_*=*|MC_CHECK=*|RX_CYCLE=*|DELAY=*)
+		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SIMPLE_IPERF=*|SKIP_*=*|NONINTERACTIVE=*|MIN_*=*|MQ_*=*|IPERF_*=*|LAB_FULL=*|DUT_IP=*|RESTART_IPERF=*|CHECK_HEALTH=*|CHECK_MEM=*|MEM_GROW_MB=*|MEM_FAIL=*|HEALTH_FAIL=*|HEALTH_UNLOAD=*|T14_CYCLE=*|T2[0-9]_*=*|MC_CHECK=*|RX_CYCLE=*|DELAY=*|KMEMLEAK_SCAN=*|KERNEL_SRC=*)
 			export "${1?}"
 			shift
 			;;
@@ -149,6 +149,7 @@ run() {
 
 cleanup() {
 	stop_iperf_servers
+	kmemleak_note_paused
 }
 trap cleanup EXIT
 
@@ -238,6 +239,7 @@ if [[ "${SKIP_HEAVY:-0}" != 1 ]]; then
 	fi
 	iface_up
 	ping_ok
+	kmemleak_pause
 	prompt_start_inbound_iperf
 
 	# ------------------------------------------------------------------
@@ -298,6 +300,7 @@ log "========== PHASE 4: CLEANUP =========="
 stop_iperf_servers
 ping_ok
 check_no_lockup
+kmemleak_check
 health_check_after "suite-end"
 health_summary
 health_unload_probe

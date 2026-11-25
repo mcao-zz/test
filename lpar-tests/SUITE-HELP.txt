@@ -98,6 +98,12 @@ Knobs (sudo KEY=val ./run_….sh  or  ./run_….sh KEY=val)
     CHECK_HEALTH=0|1     Post-test mem/softnet/adapter ALERTs (default 1)
     HEALTH_FAIL=1        Promote soft health ALERTs to FAIL
     MEM_GROW_MB=64       MemAvailable soft threshold
+    KMEMLEAK_SCAN=1      Keep kmemleak automatic scans on in the heavy
+                         phase. By default they are off from the gate on
+                         (a scan under heavy RX stalls RCU and grows the
+                         slab), and one manual scan runs in cleanup; it
+                         fails if a leak's backtrace names ibmveth
+    KERNEL_SRC=/path     Kernel tree for t24 (ynl and netdev.yaml)
     IBMVETH_KO=/path     .ko or build dir (prefer lab.conf)
     LAB_FULL=1           Also run root test-veth-mq.sh from lab-smoke
 

@@ -683,6 +683,11 @@ dmesg_since() {
 	dmesg | tail -n +"$(( $1 + 1 ))" >"$2"
 }
 
+# A driver or ethtool function in a stack trace (dyndbg ibmveth lines
+# without a +0x offset do not match).
+STACK_DRIVER_RE='(ibmveth|ethtool)_[a-z0-9_]+\+0x'
+STALL_RE='detected (expedited )?stalls|blocking rcu_node|blocked for more than [0-9]+ seconds'
+
 check_no_lockup() {
 	local f="$LOGDIR/dmesg-LOCKUP.txt" mark
 	# New lines since the last mark only. dmesg | tail -200 also
@@ -691,15 +696,15 @@ check_no_lockup() {
 	mark=$(cat "$LOGDIR/dmesg.mark" 2>/dev/null || echo 0)
 	dmesg_delta "$f"
 	echo "$mark" >"$LOGDIR/dmesg.mark"
-	if grep -Eiq 'soft lockup|hard LOCKUP|hung_task' "$f"; then
-		die "lockup / hung task seen in dmesg"
+	if grep -Eiq 'soft lockup|hard LOCKUP' "$f"; then
+		die "lockup seen in dmesg"
 	fi
-	if grep -Eiq 'detected stalls|detected expedited stalls|blocking rcu_node' "$f"; then
-		if grep -Eiq 'task:kmemleak' "$f" && ! grep -Eiq 'ibmveth|ethtool' "$f"; then
-			log "NOTE: RCU stall is kmemleak-only — not a driver lockup"
+	if grep -Eiq "$STALL_RE" "$f"; then
+		if grep -q 'task:kmemleak' "$f" && ! grep -Eq "$STACK_DRIVER_RE" "$f"; then
+			log "NOTE: RCU stall with kmemleak as the stalled task; hung tasks waiting on RCU follow from it — not a driver lockup"
 			return 0
 		fi
-		die "lockup / hung task seen in dmesg"
+		die "RCU stall / hung task seen in dmesg"
 	fi
 }
 
@@ -877,12 +882,55 @@ health_baseline_init() {
 mem_baseline_init() { health_baseline_init; }
 
 # Full health check after a test step.
+# kmemleak's automatic scan walks every tracked object in one RCU
+# read-side section. Under heavy RX on a debug kernel it does not finish,
+# no grace period ends, and the slab grows by gigabytes. The heavy phase
+# turns automatic scans off (KMEMLEAK_SCAN=1 keeps them) and does one
+# manual scan once traffic has stopped.
+: "${KMEMLEAK_SCAN:=0}"
+KMEMLEAK=/sys/kernel/debug/kmemleak
+_KMEMLEAK_PAUSED=0
+
+kmemleak_pause() {
+	[[ "$KMEMLEAK_SCAN" != 1 && -w "$KMEMLEAK" ]] || return 0
+	echo scan=off >"$KMEMLEAK" 2>/dev/null || return 0
+	echo clear >"$KMEMLEAK" 2>/dev/null || true
+	_KMEMLEAK_PAUSED=1
+	log "kmemleak: automatic scans off and earlier reports cleared for the heavy phase (KMEMLEAK_SCAN=1 keeps them on)"
+}
+
+# Fails if a reported object has ibmveth in its allocation backtrace;
+# other reports are logged only. Turns automatic scans back on.
+kmemleak_check() {
+	local f="$LOGDIR/kmemleak.txt" all mine
+	[[ "$_KMEMLEAK_PAUSED" = 1 ]] || return 0
+	_KMEMLEAK_PAUSED=0
+	log "kmemleak: manual scan after traffic stopped (can take a minute)"
+	echo scan >"$KMEMLEAK" 2>/dev/null || true
+	cat "$KMEMLEAK" >"$f" 2>/dev/null || true
+	echo scan=on >"$KMEMLEAK" 2>/dev/null || true
+	all=$(grep -c '^unreferenced object' "$f" || true)
+	mine=$(awk '/^unreferenced object/ { n++ } /ibmveth/ && n && !seen[n]++ { m++ }
+		END { print m + 0 }' "$f")
+	if [[ "$mine" -gt 0 ]]; then
+		die "kmemleak: $mine of $all unreferenced object(s) allocated from ibmveth (see $f)"
+	fi
+	ok "kmemleak: no unreferenced object from ibmveth ($all in total; see $f)"
+}
+
+# For the EXIT trap: leave scans off if the suite died mid-heavy, since
+# the peer clients may still be sending.
+kmemleak_note_paused() {
+	[[ "$_KMEMLEAK_PAUSED" = 1 ]] || return 0
+	log "NOTE: kmemleak automatic scans are still off; once traffic stops: echo scan > $KMEMLEAK; cat $KMEMLEAK; echo scan=on > $KMEMLEAK"
+}
+
 health_check_after() {
 	local label=$1
 	local v avail slab sunr kmal
 	local d_avail d_slab d_base_avail d_base_slab
 	local soft soft_d soft_t base_d base_t dd dt
-	local irqs rxn leak_count=0 warn_count=0 cur mark delta
+	local irqs rxn leak_count=0 stall_count=0 warn_count=0 cur mark delta
 	local fail=0
 
 	_health_enabled || return 0
@@ -989,19 +1037,36 @@ health_check_after() {
 		fi
 	fi
 
-	# --- dmesg: kmemleak + ibmveth WARN (since mark; do not advance) ---
+	# --- dmesg: kmemleak reports, RCU stalls / hung tasks, ibmveth WARN
+	#     (since mark; do not advance) ---
 	mark=$(cat "$LOGDIR/dmesg.mark" 2>/dev/null || echo 0)
 	cur=$(dmesg | wc -l)
 	delta=$((cur - mark))
 	if [[ "$delta" -gt 0 ]]; then
-		leak_count=$(dmesg | tail -n "$delta" | grep -ciE 'kmemleak|memory leak|memleak' || true)
-		warn_count=$(dmesg | tail -n "$delta" | grep -ciE 'ibmveth.*(WARN|WARNING)|WARNING:.*ibmveth|WARN_ON' || true)
+		dmesg | tail -n "$delta" >"$LOGDIR/dmesg-health.txt"
+		leak_count=$(grep -ciE 'unreferenced object|suspected memory leak' "$LOGDIR/dmesg-health.txt" || true)
+		stall_count=$(grep -ciE "$STALL_RE" "$LOGDIR/dmesg-health.txt" || true)
+		warn_count=$(grep -ciE 'ibmveth.*(WARN|WARNING)|WARNING:.*ibmveth|WARN_ON' "$LOGDIR/dmesg-health.txt" || true)
 	fi
 	if [[ "${leak_count:-0}" -gt 0 ]]; then
-		_health_note_alert "dmesg $leak_count new kmemleak/memory-leak line(s) after $label"
-		dmesg | tail -n "$delta" | grep -iE 'kmemleak|memory leak|memleak' | tail -10 | \
+		_health_note_alert "dmesg $leak_count kmemleak report line(s) after $label (see $KMEMLEAK)"
+		grep -iE 'unreferenced object|suspected memory leak' "$LOGDIR/dmesg-health.txt" | tail -10 | \
 			while read -r line; do log "  $line"; done
 		fail=1
+	fi
+	if [[ "${stall_count:-0}" -gt 0 ]]; then
+		if grep -q 'task:kmemleak' "$LOGDIR/dmesg-health.txt" &&
+		   ! grep -Eq "$STACK_DRIVER_RE" "$LOGDIR/dmesg-health.txt"; then
+			# kmemleak frees its tracking objects through RCU, so a
+			# stalled grace period also shows up as slab growth.
+			_health_note_alert "dmesg $stall_count RCU stall / hung task line(s) after $label; the stalled task is kmemleak, no driver frame (debug kernel; slab growth and tasks hung on RCU follow from it)"
+			_health_fail_mode && fail=1
+		else
+			_health_note_alert "dmesg $stall_count RCU stall / hung task line(s) after $label"
+			fail=1
+		fi
+		grep -iE "$STALL_RE|^.{0,20}task:" "$LOGDIR/dmesg-health.txt" | tail -8 | \
+			while read -r line; do log "  $line"; done
 	fi
 	if [[ "${warn_count:-0}" -gt 0 ]]; then
 		_health_note_alert "dmesg $warn_count ibmveth/WARN-related line(s) after $label"
@@ -1128,22 +1193,82 @@ health_unload_probe() {
 # Override: MIN_RX_DELTA=5000 RX_SAMPLE_SECS=5 MIN_ACTIVE_RX_QUEUES=2
 : "${RX_SAMPLE_SECS:=5}"
 : "${MIN_RX_DELTA:=10000}"          # sysfs rx_packets increase over sample
-: "${MIN_ACTIVE_RX_QUEUES:=2}"      # distinct queues with /proc/interrupts Δ>0
+: "${MIN_ACTIVE_RX_QUEUES:=2}"      # distinct queues with IRQ or qstats packet Δ>0
 : "${MQ_PROOF_RX:=8}"               # RX queue count used for MQ spread proof
 
 count_rx_queue_rows() {
 	count_rx_stat_rows
 }
 
-# Print "qid irq_count 0" for each live RX IRQ. s2 dropped leftover
-# ethtool -S rxN_interrupts / rxN_polls; /proc/interrupts is the
-# per-queue activity signal that needs no ynl. Third column stays 0
-# so prove_* still parses the old three-field rows.
+# Print "qid rx_packets" for each RX queue from netdev qstats-get
+# (scope queue), over raw generic netlink so no ynl or kernel tree is
+# needed. Prints nothing if python3 or qstats is missing.
+_qstats_rx_packets() {
+	command -v python3 >/dev/null 2>&1 || return 0
+	python3 - "$IFACE" 2>/dev/null <<'PYEOF' || true
+import socket, struct, sys
+s = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, 16)
+s.bind((0, 0))
+seq = 0
+def attr(t, data):
+    a = struct.pack("HH", 4 + len(data), t) + data
+    return a + b"\0" * (-len(a) % 4)
+def req(fam, cmd, flags, attrs):
+    global seq
+    seq += 1
+    body = struct.pack("BBH", cmd, 1, 0) + attrs
+    s.send(struct.pack("IHHII", 16 + len(body), fam, flags, seq, 0) + body)
+    out = []
+    while True:
+        buf = s.recv(1 << 16)
+        off = 0
+        while off < len(buf):
+            ln, typ = struct.unpack_from("IH", buf, off)
+            if typ == 3:
+                return out
+            if typ == 2:
+                err = struct.unpack_from("i", buf, off + 16)[0]
+                if err:
+                    raise OSError(-err, "netlink")
+                return out
+            a, p = {}, off + 20
+            while p < off + ln:
+                al, at = struct.unpack_from("HH", buf, p)
+                a[at & 0x3fff] = buf[p + 4:p + al]
+                p += (al + 3) & ~3
+            out.append(a)
+            off += (ln + 3) & ~3
+        if not flags & 0x300:
+            return out
+def uint(b):
+    return struct.unpack("Q" if len(b) == 8 else "I", b)[0]
+fam = req(0x10, 3, 1, attr(2, b"netdev\0"))[0]
+fid = struct.unpack("H", fam[1][:2])[0]
+idx = socket.if_nametoindex(sys.argv[1])
+# QSTATS_GET = 12 with IFINDEX = 1 and SCOPE = 4 (queue = 1). Replies
+# carry QUEUE_TYPE = 2 (RX = 0), QUEUE_ID = 3 and RX_PACKETS = 8.
+for q in req(fid, 12, 0x301,
+             attr(1, struct.pack("I", idx)) + attr(4, struct.pack("I", 1))):
+    if uint(q.get(2, b"\0\0\0\0")) == 0 and 3 in q and 8 in q:
+        print(uint(q[3]), uint(q[8]))
+PYEOF
+}
+
+# Print "qid irq_count rx_packets" for each live RX IRQ. IRQ counts come
+# from /proc/interrupts; rx_packets from qstats (0 when unavailable). A
+# queue that stays in NAPI polling under load takes no interrupts, so
+# callers count a queue as active when either column moves.
 snapshot_rx_queue_activity() {
-	local vio
+	local vio pk
 	vio=$(iface_vio_id)
-	awk -v iface="$IFACE" -v vio="$vio" '
-		BEGIN { maxq = -1 }
+	pk=$(_qstats_rx_packets | tr '\n' ' ')
+	awk -v iface="$IFACE" -v vio="$vio" -v pk="$pk" '
+		BEGIN {
+			maxq = -1
+			n = split(pk, f, " ")
+			for (i = 1; i < n; i += 2)
+				pkts[f[i]] = f[i + 1]
+		}
 		$1 ~ /^[0-9]+:/ {
 			name = $NF
 			sum = 0
@@ -1170,14 +1295,15 @@ snapshot_rx_queue_activity() {
 		END {
 			for (i = 0; i <= maxq; i++)
 				if (i in seen)
-					print i, irq[i]+0, 0
+					printf "%d %.0f %.0f\n", i, irq[i], pkts[i]
 		}
 	' /proc/interrupts
 }
 
-# Compat name: older scripts asked for rxN_packets; v6 has no such keys.
+# "qid rx_packets" per RX queue (qstats); the name older scripts used
+# for ethtool -S rxN_packets.
 snapshot_rx_queue_packets() {
-	snapshot_rx_queue_activity
+	_qstats_rx_packets
 }
 
 # Read a line from the controlling terminal (works under sudo).
@@ -1349,7 +1475,7 @@ inbound_rx_flowing() {
 
 # Hard proof: bulk inbound RX (rejects ping/ARP-sized Δ).
 # Returns 0 on success. Packet total is ndo_get_stats64 (sysfs); per-queue
-# activity is /proc/interrupts (s2 has no ethtool rxN_interrupts).
+# activity is /proc/interrupts plus qstats rx_packets.
 prove_bulk_inbound_rx() {
 	local label=${1:-bulk-rx}
 	local wait=${2:-$RX_SAMPLE_SECS}
@@ -1376,7 +1502,7 @@ prove_bulk_inbound_rx() {
 		d_pol=$((pol - b_pol))
 		if [[ "$d_irq" -gt 0 || "$d_pol" -gt 0 ]]; then
 			active=$((active + 1))
-			log "  rx${q} interrupts Δ=$d_irq polls Δ=$d_pol"
+			log "  rx${q} interrupts Δ=$d_irq packets Δ=$d_pol"
 		fi
 	done <"$after_file"
 	rm -f "$before_file" "$after_file"
@@ -1417,7 +1543,7 @@ prove_mq_rx_under_load() {
 	total=$((b_pkts - a_pkts))
 
 	log "=== $label: ${wait}s MQ sample (need Δ>=$min_delta AND >=$min_q active queues; nq=$nq) ==="
-	log "  Queue  irq-Δ   poll-Δ  status"
+	log "  Queue  irq-Δ   pkt-Δ   status"
 	log "  -----  ------  ------  ------"
 	while read -r q irq pol; do
 		b_irq=$(awk -v q="$q" '$1 == q { print $2; exit }' "$before_file")
