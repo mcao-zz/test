@@ -127,6 +127,8 @@ Knobs (sudo KEY=val ./run_….sh  or  ./run_….sh KEY=val)
                          names ibmveth (SKIP_KMEMLEAK=1 skips)
     ADAPTER_DEVINFO=0    Skip the MQ devinfo banner in preflight
     KERNEL_SRC=/path     Kernel tree for t24 (ynl and netdev.yaml).
+    IPERF_AUTO_INSTALL=1 Try dnf/yum/apt/zypper install iperf3 when missing (root).
+    IPERF3=/path         Non-standard iperf3 location (skips auto-install).
                          Default: /lib/modules/$(uname -r)/source or
                          build, then ../linux, /usr/src/linux, ...; the
                          suite says at start whether t24 will run

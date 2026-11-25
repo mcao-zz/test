@@ -60,7 +60,9 @@ Variables: `IFACE`, `PEER`, `DUT_IP`, `IBMVETH_KO`, `EXTERNAL_IPERF`,
 `IPERF_PORT_FIRST`/`LAST`, `IPERF_PARALLEL`, `IPERF_TIME` (`0` = forever),
 `KERNEL_SRC` (optional — **t24** qstats only; auto-detected if omitted),
 `LEGACY` (for `run_all.sh`: `iface=peer_ip` pairs, space-separated),
-`EXPECT_KERNEL` (optional preflight SHA match).
+`EXPECT_KERNEL` (optional preflight SHA match),
+`IPERF_AUTO_INSTALL=1` (optional — **DUT only**: `dnf`/`yum`/`apt`/`zypper`
+install **iperf3** when missing; peer still needs iperf3 installed by hand).
 
 Details: **`lpar-tests/SUITE-HELP.txt`** and **`lpar-tests/README.md`**.
 

@@ -16,6 +16,9 @@ DUT_IP=192.168.1.133
 IBMVETH_KO=/home/ming/ibmveth-build
 EXTERNAL_IPERF=1
 
+# On DUT: install iperf3 via dnf/yum if missing (preflight + heavy phase).
+IPERF_AUTO_INSTALL=1
+
 # Optional: kernel tree with Documentation/netlink/specs/netdev.yaml (t24).
 # If unset, env.sh tries /lib/modules/$(uname -r)/{source,build} and common paths.
 # KERNEL_SRC=/root/ming/linux

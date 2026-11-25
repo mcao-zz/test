@@ -138,13 +138,40 @@ find_iperf3() {
 	return 1
 }
 
+# Optional install when IPERF_AUTO_INSTALL=1 (see lab.conf.example). LPAR/RHEL
+# style hosts only; needs root and network to the distro repo.
+install_iperf3_pkg() {
+	if command -v dnf >/dev/null 2>&1; then
+		dnf install -y iperf3
+	elif command -v yum >/dev/null 2>&1; then
+		yum install -y iperf3
+	elif command -v apt-get >/dev/null 2>&1; then
+		DEBIAN_FRONTEND=noninteractive apt-get install -y iperf3
+	elif command -v zypper >/dev/null 2>&1; then
+		zypper -n install iperf3
+	else
+		log "no supported package manager (dnf/yum/apt/zypper)"
+		return 1
+	fi
+}
+
+ensure_iperf3() {
+	find_iperf3 && return 0
+	[[ "${IPERF_AUTO_INSTALL:-0}" = 1 ]] || return 1
+	need_root
+	log "iperf3 not found; IPERF_AUTO_INSTALL=1 — installing package"
+	install_iperf3_pkg || return 1
+	find_iperf3
+}
+
 need_iperf3() {
-	find_iperf3 || die "iperf3 not found (install it, or set IPERF3=/path/to/iperf3). PATH=$PATH"
+	ensure_iperf3 || find_iperf3 ||
+		die "iperf3 not found (install iperf3, set IPERF3=/path, or IPERF_AUTO_INSTALL=1). PATH=$PATH"
 	ok "using iperf3 at $IPERF3"
 }
 
 have_iperf3() {
-	find_iperf3
+	find_iperf3 || ensure_iperf3
 }
 
 iface_up() {
@@ -799,10 +826,10 @@ preflight_adapter() {
 	fi
 
 	if [[ "$mode" = mq && "${EXTERNAL_IPERF:-0}" != 1 && "${SKIP_HEAVY:-0}" != 1 ]]; then
-		if [[ -n "${IPERF3:-}" && -x "$IPERF3" ]] || command -v iperf3 >/dev/null 2>&1; then
-			ok "iperf3 present for the heavy phase"
+		if ensure_iperf3 || find_iperf3; then
+			ok "iperf3 present for the heavy phase ($IPERF3)"
 		else
-			_pf_fail "no iperf3 for the heavy phase (SKIP_HEAVY=1 or EXTERNAL_IPERF=1)"
+			_pf_fail "no iperf3 for the heavy phase (install, IPERF_AUTO_INSTALL=1, SKIP_HEAVY=1, or EXTERNAL_IPERF=1)"
 		fi
 	fi
 	command -v python3 >/dev/null 2>&1 ||
