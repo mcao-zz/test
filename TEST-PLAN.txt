@@ -77,9 +77,9 @@ s2 v9 deltas (override the v4/v6 text above and below)
 * Debug kernels with kmemleak: the heavy phase turns automatic scans off
   (KMEMLEAK_SCAN=1 keeps them). On the first v9 LPAR run a scan under
   heavy RX sat in an RCU read-side section, no grace period ended, the
-  slab grew 7 GB and systemd hung on synchronize_rcu. Cleanup does one
-  manual scan after traffic stops and fails only on leaks whose
-  backtrace names ibmveth. An RCU stall whose stalled task is kmemleak,
+  slab grew 7 GB and systemd hung on synchronize_rcu. The MQ and
+  legacy suites end with two manual scans after traffic stops and fail
+  only on leaks whose backtrace names ibmveth. An RCU stall whose stalled task is kmemleak,
   with no driver frame, is a soft alert, not a driver lockup.
 
 Prerequisites

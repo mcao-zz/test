@@ -31,20 +31,7 @@ iface_up
 log "=== T24 netdev qstats ABI on $IFACE ==="
 
 # --- locate kernel source tree for ynl ---
-: "${KERNEL_SRC:=}"
-if [[ -z "$KERNEL_SRC" ]]; then
-	# Try common relative paths from the repo root
-	for candidate in \
-		"$(dirname "$ROOT")/linux" \
-		"/usr/src/linux" \
-		"/root/linux" \
-		"/root/ming/linux"; do
-		if [[ -f "$candidate/Documentation/netlink/specs/netdev.yaml" ]]; then
-			KERNEL_SRC=$candidate
-			break
-		fi
-	done
-fi
+: "${KERNEL_SRC:=$(find_kernel_src)}"
 
 if [[ -z "$KERNEL_SRC" || ! -f "$KERNEL_SRC/Documentation/netlink/specs/netdev.yaml" ]]; then
 	log "SKIP T24: kernel source not found (set KERNEL_SRC=/path/to/linux)"

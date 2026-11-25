@@ -279,7 +279,7 @@ cases derived from each commit message.
 
 | Layer | Path | Role |
 |-------|------|------|
-| **Auto harness** | `lpar-tests/` | `run_mq_all.sh` (MQ), `run_rx_1_all.sh` (MQ+RX=1), `run_legacy_all.sh` (true non-MQ); `run-all.sh` → MQ wrapper |
+| **Auto harness** | `lpar-tests/` | `run_mq_all.sh` (MQ), `run_rx_1_all.sh` (MQ+RX=1), `run_legacy_all.sh` (true non-MQ); `run_all.sh` (alias `run-all.sh`) → MQ, then legacy on each `LEGACY` adapter |
 | **Lab monoliths** | repo root | `verify-mq-adapter.sh`, `test-veth-mq.sh`, `rx_queue_size.sh` — deep/manual or wrapped |
 
 Prefer **new automated cases in `lpar-tests/`**. Keep root scripts for bring-up and heavy one-shot suites; call them from `lpar-tests/lab-smoke.sh` / `t14-rx-cycle.sh`.
@@ -289,7 +289,8 @@ cd lpar-tests
 # Prefer lab.conf for IFACE/PEER/DUT_IP/IBMVETH_KO (do not override on CLI).
 # Switch MQ ↔ legacy by editing the profile in lab.conf, then:
 
-sudo ./run_mq_all.sh          # Full MQ; run-all.sh is a compat alias
+sudo ./run_all.sh             # Full MQ, then legacy on LEGACY="iface=peer ..."
+sudo ./run_mq_all.sh          # Full MQ only
 sudo ./run_rx_1_all.sh        # MQ FW forced to ethtool -L rx 1 (not legacy)
 sudo ./run_legacy_all.sh      # True legacy FW (max_rx==1)
 

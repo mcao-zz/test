@@ -39,7 +39,7 @@ while [[ $# -gt 0 ]]; do
 		--help|-h|help)
 			exec "$DIR/suite-help.sh" mq
 			;;
-		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SIMPLE_IPERF=*|SKIP_*=*|NONINTERACTIVE=*|MIN_*=*|MQ_*=*|IPERF_*=*|LAB_FULL=*|DUT_IP=*|RESTART_IPERF=*|CHECK_HEALTH=*|CHECK_MEM=*|MEM_GROW_MB=*|MEM_FAIL=*|HEALTH_FAIL=*|HEALTH_UNLOAD=*|T14_CYCLE=*|T2[0-9]_*=*|MC_CHECK=*|RX_CYCLE=*|DELAY=*|KMEMLEAK_SCAN=*|KERNEL_SRC=*)
+		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SIMPLE_IPERF=*|SKIP_*=*|NONINTERACTIVE=*|MIN_*=*|MQ_*=*|IPERF_*=*|LAB_FULL=*|DUT_IP=*|RESTART_IPERF=*|CHECK_HEALTH=*|CHECK_MEM=*|MEM_GROW_MB=*|MEM_FAIL=*|HEALTH_FAIL=*|HEALTH_UNLOAD=*|T14_CYCLE=*|T2[0-9]_*=*|MC_CHECK=*|RX_CYCLE=*|DELAY=*|KMEMLEAK_SCAN=*|KERNEL_SRC=*|PREFLIGHT=*|EXPECT_KERNEL=*)
 			export "${1?}"
 			shift
 			;;
@@ -131,12 +131,16 @@ fi
 
 need_root
 need_peer
+if [[ "${PREFLIGHT:-1}" = 1 ]]; then
+	preflight_adapter mq || die "preflight failed on $IFACE (PREFLIGHT=0 skips it)"
+fi
 assert_peer_on_iface
 
 log "Logs under $LOGDIR"
 log "IFACE=$IFACE PEER=$PEER ROOT=$ROOT DYNDBG=$DYNDBG SIMPLE_IPERF=$SIMPLE_IPERF EXTERNAL_IPERF=$EXTERNAL_IPERF CHECK_HEALTH=$CHECK_HEALTH IBMVETH_KO=${IBMVETH_KO:-modprobe}"
 log "MQ proof: MIN_RX_DELTA=$MIN_RX_DELTA / ${RX_SAMPLE_SECS}s, MIN_ACTIVE_RX_QUEUES=$MIN_ACTIVE_RX_QUEUES, MQ_PROOF_RX=$MQ_PROOF_RX"
 log "See $ROOT/TEST-PLAN.txt / TEST-PLAN-DEEP-DIVE.txt"
+[[ "${SKIP_T24:-0}" = 1 ]] || note_kernel_src
 
 run() {
 	local name=$1
@@ -300,7 +304,7 @@ log "========== PHASE 4: CLEANUP =========="
 stop_iperf_servers
 ping_ok
 check_no_lockup
-kmemleak_check
+[[ "${SKIP_KMEMLEAK:-0}" = 1 ]] || kmemleak_report
 health_check_after "suite-end"
 health_summary
 health_unload_probe

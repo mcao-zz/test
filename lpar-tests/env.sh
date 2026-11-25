@@ -634,6 +634,11 @@ ensure_ibmveth_dyndbg() {
 	IBMVETH_DYNDBG=1
 	export IBMVETH_DYNDBG
 	ok "ibmveth loaded with dyndbg=+p${IBMVETH_KO:+ (IBMVETH_KO)}"
+	if [[ "$(max_rx)" -ge 2 ]]; then
+		log_adapter_devinfo
+	elif [[ -d "/sys/class/net/$IFACE" ]]; then
+		log "legacy adapter on $IFACE (max_rx=$(max_rx)); MQ devinfo skipped"
+	fi
 	if [[ -n "${PEER:-}" ]]; then
 		RESTORE_IP=$saved_ip assert_rx_alive_after_up "dyndbg-load" "$saved_ip"
 	fi
@@ -675,6 +680,167 @@ dmesg_delta() {
 		: > "$out"
 	fi
 	echo "$cur" > "$LOGDIR/dmesg.mark"
+}
+
+# One banner so testers can confirm kernel + module + MQ geometry before
+# the long suite. Call after ibmveth is loaded (dyndbg reload, preflight).
+log_adapter_devinfo() {
+	local path sv ver magic ko build_sv maxr
+
+	log "===== adapter devinfo ($IFACE) ====="
+	log "  kernel:     $(uname -r)"
+	if [[ -r /sys/module/ibmveth/srcversion ]]; then
+		path=$(modinfo -F filename ibmveth 2>/dev/null || true)
+		sv=$(cat /sys/module/ibmveth/srcversion 2>/dev/null)
+		ver=$(modinfo -F version ibmveth 2>/dev/null || true)
+		magic=$(modinfo -F vermagic ibmveth 2>/dev/null || true)
+		log "  ibmveth:    ${path:-built-in}  version=${ver:-?}  srcversion=$sv"
+		log "  vermagic:   ${magic:-?}"
+	fi
+	if [[ -n "${IBMVETH_KO:-}" ]]; then
+		ko=$(resolve_ibmveth_ko 2>/dev/null) || ko=$IBMVETH_KO
+		build_sv=$(modinfo -F srcversion "$ko" 2>/dev/null || true)
+		log "  IBMVETH_KO: $ko"
+		log "              .ko srcversion=${build_sv:-?}  (must match loaded)"
+	fi
+	if [[ -d "/sys/class/net/$IFACE" ]]; then
+		log "  ethtool -i:"
+		ethtool -i "$IFACE" 2>/dev/null | sed 's/^/    /' || log "    (failed)"
+		log "  ethtool -l:"
+		ethtool -l "$IFACE" 2>/dev/null | sed 's/^/    /' || log "    (failed)"
+		maxr=$(max_rx)
+		if [[ "$maxr" -ge 2 ]]; then
+			log "  MQ: max_rx=$maxr current_rx=$(current_rx) current_tx=$(current_tx)"
+		else
+			log "  legacy FW: max_rx=$maxr current_rx=$(current_rx)"
+		fi
+	fi
+	if command -v dmesg >/dev/null 2>&1; then
+		dmesg 2>/dev/null | grep -E "ibmveth .* $IFACE:| $IFACE:|Multi-queue LAN" | tail -5 |
+			while read -r line; do log "  dmesg: $line"; done
+	fi
+	log "===================================="
+}
+
+# Is IFACE ready for the mq or legacy suite? One line per check; returns
+# the number of failed checks so callers can report every adapter before
+# stopping. Brings IFACE up if it is down. EXPECT_KERNEL=<substring of
+# uname -r> also checks the running kernel (e.g. 9cd8827b0107).
+preflight_adapter() {
+	local mode=$1 bad=0 drv maxr cur tx irqs addr ip
+	_pf_fail() { log "${_C_RED}PREFLIGHT FAIL${_C_RST} $IFACE: $*"; bad=$((bad + 1)); }
+
+	log "--- preflight $IFACE ($mode suite, PEER=${PEER:-unset}) ---"
+	if [[ ! -d "/sys/class/net/$IFACE" ]]; then
+		_pf_fail "no such interface"
+		return 1
+	fi
+	drv=$(ethtool -i "$IFACE" 2>/dev/null | awk '/^driver:/ { print $2 }')
+	[[ "$drv" = ibmveth ]] && ok "$IFACE: driver ibmveth" ||
+		_pf_fail "driver is '${drv:-unknown}', not ibmveth"
+
+	if ! ip -o link show "$IFACE" | grep -q '[<,]UP[,>]'; then
+		log "$IFACE is down; bringing it up"
+		ip link set "$IFACE" up 2>/dev/null || true
+		sleep 2
+	fi
+	ip -o link show "$IFACE" | grep -q '[<,]UP[,>]' && ok "$IFACE: up" ||
+		_pf_fail "will not come up"
+
+	addr=$(save_iface_ipv4)
+	ip=${addr%%/*}
+	if [[ -z "$addr" ]]; then
+		_pf_fail "no IPv4 address"
+	elif [[ -n "${DUT_IP:-}" && "$ip" != "$DUT_IP" ]]; then
+		_pf_fail "IPv4 is $addr but DUT_IP=$DUT_IP"
+	else
+		ok "$IFACE: IPv4 $addr"
+	fi
+
+	if [[ -z "${PEER:-}" ]]; then
+		_pf_fail "PEER not set"
+	elif peer_reachable_via_iface 8; then
+		ok "$IFACE: PEER ${PEER%%/*} answers ping -I $IFACE"
+	else
+		_pf_fail "PEER ${PEER%%/*} does not answer ping -I $IFACE (same L2 as $IFACE?)"
+	fi
+
+	maxr=$(ethtool -l "$IFACE" 2>/dev/null | awk '
+		/^Pre-set maximums:/ { p = 1; next }
+		/^Current hardware settings:/ { p = 0 }
+		p && /^[[:space:]]*RX:/ { print $2; exit }')
+	cur=$(current_rx)
+	tx=$(current_tx)
+	if [[ ! "$maxr" =~ ^[0-9]+$ ]]; then
+		_pf_fail "ethtool -l gives no RX maximum"
+	elif [[ "$mode" = mq && "$maxr" -lt 2 ]]; then
+		_pf_fail "max RX queues $maxr: firmware without MQ; use run_legacy_all.sh / LEGACY="
+	elif [[ "$mode" = legacy && "$maxr" -ne 1 ]]; then
+		_pf_fail "max RX queues $maxr: MQ firmware, not legacy; use run_mq_all.sh (or run_rx_1_all.sh)"
+	else
+		ok "$IFACE: max RX $maxr, current RX ${cur:-?} TX ${tx:-?} (${mode} firmware)"
+	fi
+
+	irqs=$(count_iface_irqs)
+	if [[ "$cur" =~ ^[0-9]+$ && "$irqs" -eq "$cur" ]]; then
+		ok "$IFACE: $irqs RX IRQ line(s) match current RX"
+	else
+		_pf_fail "$irqs RX IRQ line(s) in /proc/interrupts but current RX ${cur:-?}"
+	fi
+
+	[[ -n "$(stat_val rx_no_buffer)" ]] && ok "$IFACE: ethtool -S readable" ||
+		_pf_fail "ethtool -S has no rx_no_buffer"
+
+	if [[ "$mode" = mq && "$(max_rx)" -ge 2 && "${ADAPTER_DEVINFO:-1}" = 1 ]]; then
+		log_adapter_devinfo
+	fi
+	if [[ -n "${EXPECT_KERNEL:-}" && "$(uname -r)" != *"$EXPECT_KERNEL"* ]]; then
+		_pf_fail "running kernel $(uname -r) does not contain EXPECT_KERNEL=$EXPECT_KERNEL"
+	fi
+
+	if [[ "$mode" = mq && "${EXTERNAL_IPERF:-0}" != 1 && "${SKIP_HEAVY:-0}" != 1 ]]; then
+		if [[ -n "${IPERF3:-}" && -x "$IPERF3" ]] || command -v iperf3 >/dev/null 2>&1; then
+			ok "iperf3 present for the heavy phase"
+		else
+			_pf_fail "no iperf3 for the heavy phase (SKIP_HEAVY=1 or EXTERNAL_IPERF=1)"
+		fi
+	fi
+	command -v python3 >/dev/null 2>&1 ||
+		warn "no python3: t24 and per-queue packet counts in MQ proofs will be missing"
+	[[ -e "$KMEMLEAK" ]] && log "kmemleak present: scans off in the heavy phase, report at the end"
+
+	if [[ "$bad" -eq 0 ]]; then
+		ok "preflight $IFACE: ready for the $mode suite"
+	else
+		log "${_C_RED}preflight $IFACE: $bad check(s) failed${_C_RST}"
+	fi
+	return "$bad"
+}
+
+# Kernel tree with netdev.yaml and ynl, for t24. The running kernel's
+# /lib/modules links (set by modules_install) come first.
+find_kernel_src() {
+	local c
+	for c in "/lib/modules/$(uname -r)/source" "/lib/modules/$(uname -r)/build" \
+		"$(dirname "$ROOT")/linux" /usr/src/linux /root/linux /root/ming/linux; do
+		if [[ -f "$c/Documentation/netlink/specs/netdev.yaml" &&
+		      -f "$c/tools/testing/selftests/net/lib/py/ynl.py" ]]; then
+			readlink -f "$c"
+			return 0
+		fi
+	done
+}
+
+# Logged at suite start so a skipped t24 is not a surprise at the end.
+note_kernel_src() {
+	if [[ -n "${KERNEL_SRC:-}" ]]; then
+		log "t24 qstats: KERNEL_SRC=$KERNEL_SRC"
+	elif KERNEL_SRC=$(find_kernel_src) && [[ -n "$KERNEL_SRC" ]]; then
+		export KERNEL_SRC
+		log "t24 qstats: found kernel tree $KERNEL_SRC"
+	else
+		alert "t24 qstats will SKIP: no kernel tree with netdev.yaml (set KERNEL_SRC=/path/to/linux)"
+	fi
 }
 
 # Per-step dmesg capture that leaves the test-wide mark alone:
@@ -885,8 +1051,8 @@ mem_baseline_init() { health_baseline_init; }
 # kmemleak's automatic scan walks every tracked object in one RCU
 # read-side section. Under heavy RX on a debug kernel it does not finish,
 # no grace period ends, and the slab grows by gigabytes. The heavy phase
-# turns automatic scans off (KMEMLEAK_SCAN=1 keeps them) and does one
-# manual scan once traffic has stopped.
+# turns automatic scans off (KMEMLEAK_SCAN=1 keeps them); the suites
+# end with kmemleak_report once traffic has stopped.
 : "${KMEMLEAK_SCAN:=0}"
 KMEMLEAK=/sys/kernel/debug/kmemleak
 _KMEMLEAK_PAUSED=0
@@ -899,16 +1065,23 @@ kmemleak_pause() {
 	log "kmemleak: automatic scans off and earlier reports cleared for the heavy phase (KMEMLEAK_SCAN=1 keeps them on)"
 }
 
-# Fails if a reported object has ibmveth in its allocation backtrace;
-# other reports are logged only. Turns automatic scans back on.
-kmemleak_check() {
+# Run once traffic has stopped. Two scans a few seconds apart, so a
+# pointer that only sat in a register or on a stack during the first
+# does not count. Fails if a reported object has ibmveth in its
+# allocation backtrace; other reports are logged only. Turns automatic
+# scans back on if kmemleak_pause turned them off.
+kmemleak_report() {
 	local f="$LOGDIR/kmemleak.txt" all mine
-	[[ "$_KMEMLEAK_PAUSED" = 1 ]] || return 0
-	_KMEMLEAK_PAUSED=0
-	log "kmemleak: manual scan after traffic stopped (can take a minute)"
+	[[ -w "$KMEMLEAK" ]] || return 0
+	log "kmemleak: two manual scans (each can take a minute)"
+	echo scan >"$KMEMLEAK" 2>/dev/null || true
+	sleep 5
 	echo scan >"$KMEMLEAK" 2>/dev/null || true
 	cat "$KMEMLEAK" >"$f" 2>/dev/null || true
-	echo scan=on >"$KMEMLEAK" 2>/dev/null || true
+	if [[ "$_KMEMLEAK_PAUSED" = 1 ]]; then
+		echo scan=on >"$KMEMLEAK" 2>/dev/null || true
+		_KMEMLEAK_PAUSED=0
+	fi
 	all=$(grep -c '^unreferenced object' "$f" || true)
 	mine=$(awk '/^unreferenced object/ { n++ } /ibmveth/ && n && !seen[n]++ { m++ }
 		END { print m + 0 }' "$f")

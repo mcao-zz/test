@@ -22,6 +22,10 @@ IPERF_PARALLEL=4
 IPERF_TIME=0
 # 0 = run forever (needed for T14 full / run_mq_all heavy)
 
+# Legacy adapters for run_all.sh, iface=peer, space separated. run_all
+# runs the mq profile above, then run_legacy_all.sh on each of these.
+# LEGACY="net0=10.48.36.153"
+
 # --- profile: legacy (uncomment & comment mq block above) ---
 # IFACE=net0
 # PEER=10.48.36.153

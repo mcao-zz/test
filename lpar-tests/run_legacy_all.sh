@@ -22,7 +22,7 @@ while [[ $# -gt 0 ]]; do
 		--help|-h|help)
 			exec "$DIR/suite-help.sh" legacy
 			;;
-		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DYNDBG=*|SKIP_*=*|NONINTERACTIVE=*|CHECK_HEALTH=*|DOWN_UP_ROUNDS=*|ROUNDS=*)
+		EXTERNAL_IPERF=*|IBMVETH_KO=*|IFACE=*|PEER=*|DUT_IP=*|DYNDBG=*|SKIP_*=*|NONINTERACTIVE=*|CHECK_HEALTH=*|DOWN_UP_ROUNDS=*|ROUNDS=*|KERNEL_SRC=*|LOGDIR=*|PREFLIGHT=*|EXPECT_KERNEL=*)
 			export "${1?}"
 			shift
 			;;
@@ -55,6 +55,9 @@ fi
 
 need_root
 need_peer
+if [[ "${PREFLIGHT:-1}" = 1 ]]; then
+	preflight_adapter legacy || die "preflight failed on $IFACE (PREFLIGHT=0 skips it)"
+fi
 assert_peer_on_iface
 
 max=$(max_rx)
@@ -64,6 +67,7 @@ fi
 
 log "=== LEGACY suite on $IFACE (max_rx=1) PEER=$PEER IBMVETH_KO=${IBMVETH_KO:-modprobe} ==="
 log "Logs under $LOGDIR"
+[[ "${SKIP_T24:-0}" = 1 ]] || note_kernel_src
 
 run() {
 	local name=$1
@@ -123,6 +127,7 @@ fi
 check_no_lockup
 check_no_oops
 ping_ok
+[[ "${SKIP_KMEMLEAK:-0}" = 1 ]] || kmemleak_report
 ok "LEGACY suite PASS on $IFACE"
 log "Done. (Skipped MQ-only: T14, L-cycle, T8/T17 stash stress, T19 multi-RX, T20 MQ restore)"
 log "  SKIP_T11=1 / SKIP_T24=1 to skip debugfs geometry / qstats ABI"

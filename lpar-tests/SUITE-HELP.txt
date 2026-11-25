@@ -3,6 +3,7 @@ ibmveth lab suite help
 
 View this anytime:
   ./suite-help.sh
+  ./run_all.sh --help
   sudo ./run_mq_all.sh --help
   sudo ./run_legacy_all.sh --help
   sudo ./run_rx_1_all.sh --help
@@ -19,8 +20,24 @@ One-shot knobs (SKIP_*, T14_CYCLE, EXTERNAL_IPERF, …) on the sudo line are OK.
 Which suite?
 ------------
 
+  run_all.sh          run_mq_all.sh, then run_legacy_all.sh on each adapter
+                      in LEGACY="iface=peer ..." (lab.conf or CLI). Each
+                      legacy run: own LOGDIR ($LOGDIR/legacy-<iface>),
+                      DUT_IP from the iface, no reload. SKIP_MQ=1 for
+                      legacy only; LEGACY_EXTERNAL_IPERF=1 if the lab
+                      drives traffic there. Alias: run-all.sh
+
+  preflight.sh        Readiness check only, for IFACE and each LEGACY pair:
+                      exists, driver ibmveth, up, IPv4 (= DUT_IP if set),
+                      PEER answers ping -I, max RX >= 2 (MQ) or 1
+                      (legacy), RX IRQ lines = current RX, ethtool -S,
+                      iperf3 for the MQ heavy phase; EXPECT_KERNEL=<part
+                      of uname -r> checks the kernel. run_all.sh runs it
+                      for every adapter first; run_mq_all.sh and
+                      run_legacy_all.sh check their own adapter at start.
+                      PREFLIGHT=0 skips it.
+
   run_mq_all.sh       Full MQ (max_rx >= 2). Quiet + inbound gate + heavy.
-                      Alias: run-all.sh
 
   run_rx_1_all.sh     MQ firmware forced to ethtool -L rx 1 (NOT legacy).
                       Churn / close / soak / bounce 1↔mid↔max under flood.
@@ -36,6 +53,8 @@ Which suite?
 Typical runs (after lab.conf + peer iperf -t 0)
 -----------------------------------------------
 
+  sudo ./preflight.sh LEGACY="net0=10.48.36.153" EXPECT_KERNEL=9cd8827b0107
+  sudo ./run_all.sh LEGACY="net0=10.48.36.153"   # MQ, then legacy net0
   sudo EXTERNAL_IPERF=1 ./run_mq_all.sh
   sudo EXTERNAL_IPERF=1 ./run_rx_1_all.sh
   # edit lab.conf to legacy profile (net0 / 10.48.36.x), then:
@@ -101,9 +120,14 @@ Knobs (sudo KEY=val ./run_….sh  or  ./run_….sh KEY=val)
     KMEMLEAK_SCAN=1      Keep kmemleak automatic scans on in the heavy
                          phase. By default they are off from the gate on
                          (a scan under heavy RX stalls RCU and grows the
-                         slab), and one manual scan runs in cleanup; it
-                         fails if a leak's backtrace names ibmveth
-    KERNEL_SRC=/path     Kernel tree for t24 (ynl and netdev.yaml)
+                         slab). The MQ and legacy suites end with two
+                         manual scans and fail if a leak's backtrace
+                         names ibmveth (SKIP_KMEMLEAK=1 skips)
+    ADAPTER_DEVINFO=0    Skip the MQ devinfo banner in preflight
+    KERNEL_SRC=/path     Kernel tree for t24 (ynl and netdev.yaml).
+                         Default: /lib/modules/$(uname -r)/source or
+                         build, then ../linux, /usr/src/linux, ...; the
+                         suite says at start whether t24 will run
     IBMVETH_KO=/path     .ko or build dir (prefer lab.conf)
     LAB_FULL=1           Also run root test-veth-mq.sh from lab-smoke
 
