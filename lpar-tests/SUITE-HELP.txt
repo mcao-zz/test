@@ -112,6 +112,9 @@ Knobs (sudo KEY=val ./run_….sh  or  ./run_….sh KEY=val)
     SKIP_PARALLEL=1      Skip parallel-stress.sh hang hunt
     STRESS_SECS=N        parallel-stress duration (default 300)
     T14_CYCLE=quick|full Short vs exhaustive T14 under load
+    MAX_NOBUF_DELTA=N    T14 rx_no_buffer Δ cap under UNDER_RX (default 64;
+                         use 256+ with EXTERNAL_IPERF=1 if scale-up spikes)
+    DELAY=N              Seconds between T14 resize steps (default 1)
     SKIP_T14=1           Skip T14
     SKIP_MQ_PROOF=1      Skip MQ under-load re-proofs
     SIMPLE_IPERF=1       Soft gate; skip MQ-spread + T14

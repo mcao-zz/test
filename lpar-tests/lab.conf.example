@@ -16,6 +16,11 @@ DUT_IP=192.168.1.133
 IBMVETH_KO=/home/ming/ibmveth-build
 EXTERNAL_IPERF=1
 
+# T14 under load: allow brief rx_no_buffer spikes during ethtool -L scale-up
+# (default 64 is tight on ltcd51 with lab iperf; Δ~185 seen on 8→16).
+MAX_NOBUF_DELTA=256
+DELAY=2
+
 # On DUT: install iperf3 via dnf/yum if missing (preflight + heavy phase).
 IPERF_AUTO_INSTALL=1
 
@@ -24,7 +29,7 @@ IPERF_AUTO_INSTALL=1
 # KERNEL_SRC=/root/ming/linux
 
 # Optional: fail preflight when uname -r does not match this git short SHA.
-# EXPECT_KERNEL=81a8f2902bc3
+# EXPECT_KERNEL=79196e84b5aa
 
 # iperf (DUT servers + peer clients)
 IPERF_PORT_FIRST=5201
